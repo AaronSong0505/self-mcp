@@ -5,6 +5,29 @@ import type {
   ExtractedArticle,
   ImageInsight,
 } from "../../core/src/types.js";
+import type { AnalyzerRuntime } from "./openai-client.js";
+
+const GENERIC_NOVELTY_SIGNALS = [
+  "发布",
+  "开源",
+  "推出",
+  "上线",
+  "首发",
+  "首次",
+  "新模型",
+  "新架构",
+  "新算法",
+  "论文",
+  "paper",
+  "benchmark",
+  "评测",
+  "sota",
+  "训练",
+  "推理",
+  "reasoning",
+  "agent",
+  "mcp",
+];
 
 function pickParagraphs(text: string, limit: number): string[] {
   return text
@@ -36,8 +59,10 @@ function heuristicAnalysis(params: {
   const joinedText = `${title}\n${params.article.blurb ?? ""}\n${params.article.contentText}`;
   const includeHits = collectKeywordMatches(joinedText, params.rules.interests?.includeKeywords ?? []);
   const priorityHits = collectKeywordMatches(joinedText, params.rules.interests?.priorityKeywords ?? []);
+  const companyHits = collectKeywordMatches(joinedText, params.rules.interests?.companyWatchlist ?? []);
   const deprioritizeHits = collectKeywordMatches(joinedText, params.rules.interests?.deprioritizeKeywords ?? []);
   const excludeHits = collectKeywordMatches(joinedText, params.rules.interests?.excludeKeywords ?? []);
+  const noveltyHits = collectKeywordMatches(joinedText, GENERIC_NOVELTY_SIGNALS);
   const matchedRules =
     params.rules.labels?.content
       ?.filter((rule) => collectKeywordMatches(joinedText, rule.keywords).length > 0)
@@ -53,6 +78,8 @@ function heuristicAnalysis(params: {
   const score =
     includeHits.length * 2 +
     priorityHits.length * 3 +
+    Math.min(companyHits.length, 3) * 1.5 +
+    Math.min(noveltyHits.length, 3) * 0.5 +
     weightedLabelScore +
     (params.imageInsights.length > 0 ? 1 : 0) -
     deprioritizeHits.length * 1.5 -
@@ -70,11 +97,15 @@ function heuristicAnalysis(params: {
   const whyRelevant =
     priorityHits.length > 0
       ? `命中高优先级技术关键词：${priorityHits.join("、")}。`
+      : companyHits.length > 0
+        ? `涉及重点关注 AI 公司或模型生态：${companyHits.join("、")}。`
       : includeHits.length > 0
-      ? `命中关注关键词：${includeHits.join("、")}。`
-      : contentLabels.length > 0
-        ? `属于 ${contentLabels.join(" / ")} 类内容。`
-        : "信息密度一般，保留作备查。";
+        ? `命中关注关键词：${includeHits.join("、")}。`
+        : contentLabels.length > 0
+          ? `属于 ${contentLabels.join(" / ")} 类内容。`
+          : noveltyHits.length > 0
+            ? `存在值得二次判断的新发布/新技术信号：${noveltyHits.join("、")}。`
+            : "信息密度一般，保留作备查。";
 
   return {
     summary,
@@ -94,6 +125,49 @@ function normalizeStringArray(value: unknown, fallback: string[]): string[] {
   }
   const normalized = value.map((entry) => String(entry).trim()).filter(Boolean);
   return normalized.length > 0 ? normalized : fallback;
+}
+
+export function mergeModelAnalysis(params: {
+  heuristic: ArticleAnalysisResult;
+  model: Record<string, unknown>;
+  rules: DigestRulesConfig;
+  runtime: AnalyzerRuntime;
+  imageInsights: ImageInsight[];
+}): ArticleAnalysisResult {
+  const listLabels = params.rules.labels?.list ?? ["必读", "值得看", "信息备查", "略过"];
+  const requestedLabel = String(params.model.listLabel ?? params.heuristic.listLabel).trim();
+  const breakoutCandidate = Boolean(params.model.breakoutCandidate ?? false);
+  const openWorldReason = String(params.model.openWorldReason ?? "").trim();
+
+  let listLabel = listLabels.includes(requestedLabel) ? requestedLabel : params.heuristic.listLabel;
+  if (breakoutCandidate && (listLabel === "略过" || listLabel === "信息备查")) {
+    listLabel = "值得看";
+  }
+
+  let relevanceScore = Number(params.model.relevanceScore ?? params.heuristic.relevanceScore);
+  if (!Number.isFinite(relevanceScore)) {
+    relevanceScore = params.heuristic.relevanceScore;
+  }
+  if (breakoutCandidate) {
+    relevanceScore += 2;
+  }
+
+  const whyRelevantBase = String(params.model.whyRelevant ?? params.heuristic.whyRelevant).trim();
+  const whyRelevant =
+    breakoutCandidate && openWorldReason
+      ? `${whyRelevantBase} 黑马信号：${openWorldReason}`
+      : whyRelevantBase;
+
+  return {
+    summary: truncate(String(params.model.summary ?? params.heuristic.summary).trim(), params.runtime.summaryMaxChars),
+    whyRelevant,
+    keyTakeaways: normalizeStringArray(params.model.keyTakeaways, params.heuristic.keyTakeaways).slice(0, 5),
+    contentLabels: normalizeStringArray(params.model.contentLabels, params.heuristic.contentLabels),
+    listLabel,
+    digestEligible: breakoutCandidate ? true : Boolean(params.model.digestEligible ?? params.heuristic.digestEligible),
+    relevanceScore,
+    heroImages: params.imageInsights,
+  };
 }
 
 export async function analyzeArticle(params: {
@@ -134,6 +208,7 @@ export async function analyzeArticle(params: {
   try {
     const listLabels = params.rules.labels?.list ?? ["必读", "值得看", "信息备查", "略过"];
     const contentLabels = (params.rules.labels?.content ?? []).map((entry) => entry.label);
+    const companyWatchlist = params.rules.interests?.companyWatchlist ?? [];
     const json = await runStructuredArticleAnalysis({
       runtime,
       prompt: [
@@ -141,8 +216,11 @@ export async function analyzeArticle(params: {
         `用户关注目标：${params.rules.interests?.objective ?? "节省时间，优先高信息密度内容。"}`,
         `允许的 listLabel：${listLabels.join("、")}`,
         `建议的 contentLabels：${contentLabels.join("、") || "未分类"}`,
+        `重点关注的 AI 公司/生态：${companyWatchlist.join("、") || "无固定名单"}`,
+        "不要机械依赖既有关键词。如果文章提到新的黑马公司、黑马模型、黑马技术路线、重要论文、重要评测突破，哪怕它不在既有名单里，也要按开放世界判断提升优先级。",
+        "如果你判断它属于值得持续关注的新公司/新技术/重要发布，请把 breakoutCandidate 设为 true，并在 openWorldReason 里说明原因。",
         "请严格返回 JSON：",
-        `{\"summary\":\"...\",\"whyRelevant\":\"...\",\"keyTakeaways\":[\"...\"],\"contentLabels\":[\"...\"],\"listLabel\":\"...\",\"digestEligible\":true,\"relevanceScore\":0}`,
+        `{\"summary\":\"...\",\"whyRelevant\":\"...\",\"keyTakeaways\":[\"...\"],\"contentLabels\":[\"...\"],\"listLabel\":\"...\",\"digestEligible\":true,\"relevanceScore\":0,\"breakoutCandidate\":false,\"openWorldReason\":\"...\"}`,
         "文章标题：",
         params.article.title,
         "文章摘要候选：",
@@ -158,17 +236,13 @@ export async function analyzeArticle(params: {
       return heuristic;
     }
 
-    const listLabel = String(json.listLabel ?? heuristic.listLabel).trim();
-    return {
-      summary: truncate(String(json.summary ?? heuristic.summary).trim(), runtime.summaryMaxChars),
-      whyRelevant: String(json.whyRelevant ?? heuristic.whyRelevant).trim(),
-      keyTakeaways: normalizeStringArray(json.keyTakeaways, heuristic.keyTakeaways).slice(0, 5),
-      contentLabels: normalizeStringArray(json.contentLabels, heuristic.contentLabels),
-      listLabel: listLabels.includes(listLabel) ? listLabel : heuristic.listLabel,
-      digestEligible: Boolean(json.digestEligible ?? heuristic.digestEligible),
-      relevanceScore: Number(json.relevanceScore ?? heuristic.relevanceScore),
-      heroImages: imageInsights,
-    };
+    return mergeModelAnalysis({
+      heuristic,
+      model: json,
+      rules: params.rules,
+      runtime,
+      imageInsights,
+    });
   } catch {
     return heuristic;
   }

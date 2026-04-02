@@ -53,6 +53,7 @@ export type DigestRulesConfig = {
     objective?: string;
     includeKeywords?: string[];
     priorityKeywords?: string[];
+    companyWatchlist?: string[];
     deprioritizeKeywords?: string[];
     excludeKeywords?: string[];
   };

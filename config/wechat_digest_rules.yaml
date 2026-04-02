@@ -9,7 +9,8 @@ interests:
   objective: >
     这是 Aaron 的个人 AI 技术晨报。优先保留与 AI 技术进展、强化学习、算法、模型训练、
     推理、评测、论文、Agent 基础设施、开源实现和工程落地有关的高信息密度内容。产品发布、
-    融资、市值、营销包装类新闻只有在技术含量明显较高时才保留。
+    融资、市值、营销包装类新闻只有在技术含量明显较高时才保留。同时要特别留意各大 AI 公司、
+    以及可能突然冒出来的黑马公司和黑马技术，不要因为没命中既有关键词就漏掉真正重要的新发布。
   includeKeywords:
     - AI
     - LLM
@@ -72,6 +73,38 @@ interests:
     - 数据集
     - dataset
     - reasoning
+  companyWatchlist:
+    - OpenAI
+    - Anthropic
+    - Google DeepMind
+    - DeepMind
+    - Google AI
+    - Meta AI
+    - Meta
+    - xAI
+    - Mistral
+    - Cohere
+    - DeepSeek
+    - Qwen
+    - 通义
+    - 阿里云百炼
+    - 百炼
+    - Kimi
+    - 月之暗面
+    - MiniMax
+    - 智谱
+    - Zhipu
+    - 阶跃星辰
+    - StepFun
+    - 字节
+    - Seed
+    - 豆包
+    - 腾讯混元
+    - Hunyuan
+    - Claude
+    - Gemini
+    - Llama
+    - Grok
   deprioritizeKeywords:
     - 融资
     - 估值
