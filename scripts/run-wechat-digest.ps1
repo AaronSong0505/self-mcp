@@ -1,4 +1,6 @@
 param(
+  [ValidateSet("morning", "followup")]
+  [string]$Mode = "morning",
   [string]$Date,
   [string]$Target = "aaron-wechat",
   [switch]$DryRun
@@ -33,7 +35,8 @@ if (Test-Path $envFile) {
 [System.Environment]::SetEnvironmentVariable("OPENCLAW_CLI_WRAPPER", (Join-Path $openclawRoot "scripts\\openclaw.ps1"), "Process")
 
 $node = "node"
-$entry = Join-Path $rootDir "dist\\services\\wechat-digest-mcp\\src\\run-morning.js"
+$entryName = if ($Mode -eq "followup") { "run-followup.js" } else { "run-morning.js" }
+$entry = Join-Path $rootDir "dist\\services\\wechat-digest-mcp\\src\\$entryName"
 $args = @($entry, "--target", $Target)
 if ($Date) {
   $args += @("--date", $Date)

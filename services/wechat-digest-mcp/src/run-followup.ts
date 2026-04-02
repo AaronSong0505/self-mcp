@@ -39,33 +39,27 @@ function parseArgs(argv: string[]): CliArgs {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const service = await WechatDigestService.create();
-  const scan = await service.scan();
-  const newIds = scan.articles.filter((article) => article.status === "new").map((article) => article.articleId);
-  const analyzed = newIds.length > 0 ? await service.analyze({ articleIds: newIds }) : [];
-  const digest = await service.buildDigest({
+  const followup = await service.sendLearningFollowup({
     date: args.date ?? toDateKey(new Date()),
     targetId: args.targetId,
     dryRun: args.dryRun,
   });
 
-  const result = {
-    date: digest.date,
-    targetId: digest.targetId,
-    dryRun: digest.dryRun,
-    scannedSources: scan.sourceCount,
-    discoveredArticles: scan.articles.length,
-    newArticles: newIds.length,
-    analyzedArticles: analyzed.length,
-    candidateCount: digest.candidateCount,
-    learningCandidateCount: digest.learningCandidateCount,
-    sentCount: digest.sentCount,
-  };
-  process.stdout.write(`${JSON.stringify(result)}\n`);
+  process.stdout.write(
+    `${JSON.stringify({
+      date: followup.date,
+      targetId: followup.targetId,
+      dryRun: followup.dryRun,
+      candidateCount: followup.candidateCount,
+      sentCount: followup.sentCount,
+      messageCount: followup.messages.length,
+    })}\n`,
+  );
 }
 
 main().catch((error) => {
   process.stderr.write(
-    `run-morning failed: ${error instanceof Error ? error.stack ?? error.message : String(error)}\n`,
+    `run-followup failed: ${error instanceof Error ? error.stack ?? error.message : String(error)}\n`,
   );
   process.exit(1);
 });

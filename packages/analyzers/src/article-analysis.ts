@@ -1,9 +1,17 @@
 import { describeImages, hasModelAccess, resolveAnalyzerRuntime, runStructuredArticleAnalysis } from "./openai-client.js";
+import {
+  defaultBucketForCandidateType,
+  normalizeLearningValue,
+} from "../../core/src/rules.js";
 import type {
   ArticleAnalysisResult,
   DigestRulesConfig,
   ExtractedArticle,
   ImageInsight,
+  LearningCandidateType,
+  LearningConfidence,
+  LearningTargetBucket,
+  RuleCandidate,
 } from "../../core/src/types.js";
 import type { AnalyzerRuntime } from "./openai-client.js";
 
@@ -49,6 +57,165 @@ function collectKeywordMatches(text: string, keywords: string[]): string[] {
   return keywords.filter((keyword) => lower.includes(keyword.toLowerCase()));
 }
 
+function sanitizeCandidateType(value: unknown): LearningCandidateType | undefined {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (normalized === "company" || normalized === "technology" || normalized === "theme") {
+    return normalized;
+  }
+  return undefined;
+}
+
+function sanitizeTargetBucket(value: unknown): LearningTargetBucket | undefined {
+  const normalized = String(value ?? "").trim();
+  switch (normalized) {
+    case "companyWatchlist":
+    case "priorityKeywords":
+    case "includeKeywords":
+    case "labelKeyword":
+    case "newLabel":
+      return normalized;
+    default:
+      return undefined;
+  }
+}
+
+function sanitizeConfidence(value: unknown): LearningConfidence {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  switch (normalized) {
+    case "high":
+    case "medium":
+    case "low":
+      return normalized;
+    default:
+      return "medium";
+  }
+}
+
+function normalizeAliases(values: unknown, displayValue: string): string[] {
+  if (!Array.isArray(values)) {
+    return [];
+  }
+  const seen = new Set<string>();
+  const output: string[] = [];
+  for (const entry of values) {
+    const normalized = String(entry ?? "").trim();
+    if (!normalized) {
+      continue;
+    }
+    const key = normalizeLearningValue(normalized);
+    if (!key || key === normalizeLearningValue(displayValue) || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    output.push(normalized);
+  }
+  return output;
+}
+
+function guessThemeLabel(params: {
+  rawTargetLabel: unknown;
+  rawContentLabels: unknown;
+  rules: DigestRulesConfig;
+  fallbackValue: string;
+}): string | undefined {
+  const explicit = String(params.rawTargetLabel ?? "").trim();
+  if (explicit) {
+    return explicit;
+  }
+  if (Array.isArray(params.rawContentLabels)) {
+    for (const entry of params.rawContentLabels) {
+      const label = String(entry ?? "").trim();
+      if (label && (params.rules.labels?.content ?? []).some((rule) => rule.label === label)) {
+        return label;
+      }
+    }
+  }
+  return params.fallbackValue.trim() || undefined;
+}
+
+function normalizeRuleCandidates(params: {
+  value: unknown;
+  rules: DigestRulesConfig;
+  whyRelevant: string;
+  openWorldReason: string;
+  contentLabels: string[];
+}): RuleCandidate[] {
+  if (!Array.isArray(params.value)) {
+    return [];
+  }
+
+  const deduped = new Map<string, RuleCandidate>();
+  for (const entry of params.value) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      continue;
+    }
+    const raw = entry as Record<string, unknown>;
+    const candidateType = sanitizeCandidateType(raw.candidateType ?? raw.type);
+    if (!candidateType) {
+      continue;
+    }
+
+    const displayValue = String(raw.displayValue ?? raw.value ?? "").trim();
+    const normalizedValue = normalizeLearningValue(
+      String(raw.normalizedValue ?? displayValue),
+    );
+    if (!displayValue || !normalizedValue) {
+      continue;
+    }
+
+    const targetBucket =
+      sanitizeTargetBucket(raw.targetBucket) ?? defaultBucketForCandidateType(candidateType);
+    const targetLabel =
+      candidateType === "theme"
+        ? guessThemeLabel({
+            rawTargetLabel: raw.targetLabel,
+            rawContentLabels: raw.contentLabels,
+            rules: params.rules,
+            fallbackValue: displayValue,
+          })
+        : undefined;
+    const confidence = sanitizeConfidence(raw.confidence);
+    const aliases = normalizeAliases(raw.aliases, displayValue);
+    const rationale = truncate(
+      String(raw.rationale ?? params.openWorldReason ?? params.whyRelevant ?? displayValue).trim(),
+      220,
+    );
+    const evidenceSnippet = truncate(
+      String(raw.evidenceSnippet ?? raw.evidence ?? displayValue).trim(),
+      220,
+    );
+    const breakoutCandidate = Boolean(raw.breakoutCandidate ?? false);
+
+    const candidate: RuleCandidate = {
+      candidateType,
+      displayValue,
+      normalizedValue,
+      targetBucket:
+        candidateType === "theme" && targetBucket === "companyWatchlist"
+          ? "labelKeyword"
+          : targetBucket,
+      ...(targetLabel ? { targetLabel } : {}),
+      ...(aliases.length > 0 ? { aliases } : {}),
+      confidence,
+      rationale,
+      evidenceSnippet,
+      breakoutCandidate,
+    };
+
+    const key = [
+      candidate.candidateType,
+      candidate.normalizedValue,
+      candidate.targetBucket,
+      candidate.targetLabel ?? "",
+    ].join("|");
+    if (!deduped.has(key)) {
+      deduped.set(key, candidate);
+    }
+  }
+
+  return [...deduped.values()].slice(0, 5);
+}
+
 function heuristicAnalysis(params: {
   article: ExtractedArticle;
   rules: DigestRulesConfig;
@@ -60,13 +227,14 @@ function heuristicAnalysis(params: {
   const includeHits = collectKeywordMatches(joinedText, params.rules.interests?.includeKeywords ?? []);
   const priorityHits = collectKeywordMatches(joinedText, params.rules.interests?.priorityKeywords ?? []);
   const companyHits = collectKeywordMatches(joinedText, params.rules.interests?.companyWatchlist ?? []);
-  const deprioritizeHits = collectKeywordMatches(joinedText, params.rules.interests?.deprioritizeKeywords ?? []);
+  const deprioritizeHits = collectKeywordMatches(
+    joinedText,
+    params.rules.interests?.deprioritizeKeywords ?? [],
+  );
   const excludeHits = collectKeywordMatches(joinedText, params.rules.interests?.excludeKeywords ?? []);
   const noveltyHits = collectKeywordMatches(joinedText, GENERIC_NOVELTY_SIGNALS);
   const matchedRules =
-    params.rules.labels?.content
-      ?.filter((rule) => collectKeywordMatches(joinedText, rule.keywords).length > 0)
-      ?? [];
+    params.rules.labels?.content?.filter((rule) => collectKeywordMatches(joinedText, rule.keywords).length > 0) ?? [];
   const contentLabels = matchedRules.map((rule) => rule.label);
   const weightedLabelScore = matchedRules.reduce((sum, rule) => sum + (rule.weight ?? 1), 0);
 
@@ -84,6 +252,7 @@ function heuristicAnalysis(params: {
     (params.imageInsights.length > 0 ? 1 : 0) -
     deprioritizeHits.length * 1.5 -
     excludeHits.length * 3;
+
   const listLabel =
     excludeHits.length > 0 && includeHits.length === 0
       ? "略过"
@@ -94,18 +263,19 @@ function heuristicAnalysis(params: {
           : score >= 0
             ? "信息备查"
             : "略过";
+
   const whyRelevant =
     priorityHits.length > 0
       ? `命中高优先级技术关键词：${priorityHits.join("、")}。`
       : companyHits.length > 0
         ? `涉及重点关注 AI 公司或模型生态：${companyHits.join("、")}。`
-      : includeHits.length > 0
-        ? `命中关注关键词：${includeHits.join("、")}。`
-        : contentLabels.length > 0
-          ? `属于 ${contentLabels.join(" / ")} 类内容。`
-          : noveltyHits.length > 0
-            ? `存在值得二次判断的新发布/新技术信号：${noveltyHits.join("、")}。`
-            : "信息密度一般，保留作备查。";
+        : includeHits.length > 0
+          ? `命中关注关键词：${includeHits.join("、")}。`
+          : contentLabels.length > 0
+            ? `属于 ${contentLabels.join(" / ")} 类内容。`
+            : noveltyHits.length > 0
+              ? `存在值得二次判断的新发布/新技术信号：${noveltyHits.join("、")}。`
+              : "信息密度一般，保留作备查。";
 
   return {
     summary,
@@ -116,6 +286,7 @@ function heuristicAnalysis(params: {
     digestEligible: listLabel !== "略过",
     relevanceScore: score,
     heroImages: params.imageInsights,
+    ruleCandidates: [],
   };
 }
 
@@ -158,15 +329,34 @@ export function mergeModelAnalysis(params: {
       ? `${whyRelevantBase} 黑马信号：${openWorldReason}`
       : whyRelevantBase;
 
-  return {
-    summary: truncate(String(params.model.summary ?? params.heuristic.summary).trim(), params.runtime.summaryMaxChars),
+  const contentLabels = normalizeStringArray(
+    params.model.contentLabels,
+    params.heuristic.contentLabels,
+  );
+  const ruleCandidates = normalizeRuleCandidates({
+    value: params.model.ruleCandidates,
+    rules: params.rules,
     whyRelevant,
-    keyTakeaways: normalizeStringArray(params.model.keyTakeaways, params.heuristic.keyTakeaways).slice(0, 5),
-    contentLabels: normalizeStringArray(params.model.contentLabels, params.heuristic.contentLabels),
+    openWorldReason,
+    contentLabels,
+  });
+
+  return {
+    summary: truncate(
+      String(params.model.summary ?? params.heuristic.summary).trim(),
+      params.runtime.summaryMaxChars,
+    ),
+    whyRelevant,
+    keyTakeaways: normalizeStringArray(
+      params.model.keyTakeaways,
+      params.heuristic.keyTakeaways,
+    ).slice(0, 5),
+    contentLabels,
     listLabel,
     digestEligible: breakoutCandidate ? true : Boolean(params.model.digestEligible ?? params.heuristic.digestEligible),
     relevanceScore,
     heroImages: params.imageInsights,
+    ruleCandidates,
   };
 }
 
@@ -219,8 +409,12 @@ export async function analyzeArticle(params: {
         `重点关注的 AI 公司/生态：${companyWatchlist.join("、") || "无固定名单"}`,
         "不要机械依赖既有关键词。如果文章提到新的黑马公司、黑马模型、黑马技术路线、重要论文、重要评测突破，哪怕它不在既有名单里，也要按开放世界判断提升优先级。",
         "如果你判断它属于值得持续关注的新公司/新技术/重要发布，请把 breakoutCandidate 设为 true，并在 openWorldReason 里说明原因。",
+        "如果文章里出现值得以后纳入规则的新信号，请在 ruleCandidates 中返回 0 到 3 条候选。",
+        "ruleCandidates 中每条候选都必须只使用以下 candidateType：company、technology、theme。",
+        "ruleCandidates 中每条候选都必须只使用以下 targetBucket：companyWatchlist、priorityKeywords、includeKeywords、labelKeyword、newLabel。",
+        "theme 候选如果能归入现有主题标签，请使用 labelKeyword 并填写 targetLabel；如果现有标签不合适，再用 newLabel。",
         "请严格返回 JSON：",
-        `{\"summary\":\"...\",\"whyRelevant\":\"...\",\"keyTakeaways\":[\"...\"],\"contentLabels\":[\"...\"],\"listLabel\":\"...\",\"digestEligible\":true,\"relevanceScore\":0,\"breakoutCandidate\":false,\"openWorldReason\":\"...\"}`,
+        "{\"summary\":\"...\",\"whyRelevant\":\"...\",\"keyTakeaways\":[\"...\"],\"contentLabels\":[\"...\"],\"listLabel\":\"...\",\"digestEligible\":true,\"relevanceScore\":0,\"breakoutCandidate\":false,\"openWorldReason\":\"...\",\"ruleCandidates\":[{\"candidateType\":\"company\",\"displayValue\":\"...\",\"normalizedValue\":\"...\",\"targetBucket\":\"companyWatchlist\",\"targetLabel\":\"...\",\"aliases\":[\"...\"],\"confidence\":\"medium\",\"rationale\":\"...\",\"evidenceSnippet\":\"...\",\"breakoutCandidate\":true}]}",
         "文章标题：",
         params.article.title,
         "文章摘要候选：",

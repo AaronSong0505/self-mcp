@@ -33,7 +33,7 @@ async function main() {
 
   server.tool(
     "wechat_articles.analyze",
-    "Fetch full article content, extract images, and produce structured labels and summaries.",
+    "Fetch full article content, extract images, and produce structured labels, summaries, and learning candidates.",
     {
       articleIds: z.array(z.string()).optional(),
       urls: z.array(z.string().url()).optional(),
@@ -88,7 +88,88 @@ async function main() {
         content: [
           {
             type: "text",
-            text: `Status ${result.date}: discovered=${result.discovered}, analyzed=${result.analyzed}, delivered=${result.delivered}.`,
+            text: `Status ${result.date}: discovered=${result.discovered}, analyzed=${result.analyzed}, delivered=${result.delivered}, pendingLearning=${result.pendingLearning}.`,
+          },
+        ],
+        structuredContent: result,
+      };
+    },
+  );
+
+  server.tool(
+    "wechat_learning.pending",
+    "Show pending or historical learning candidates that can be approved into the dynamic digest rules overlay.",
+    {
+      status: z.enum(["pending", "approved", "rejected", "snoozed", "all"]).optional(),
+      limit: z.number().int().min(1).max(50).optional(),
+    },
+    async ({ status, limit }) => {
+      const result = await service.pendingLearning({ status, limit });
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Loaded ${result.items.length} learning candidate(s) with status=${result.status}.`,
+          },
+        ],
+        structuredContent: result,
+      };
+    },
+  );
+
+  server.tool(
+    "wechat_learning.approve",
+    "Approve one or more learning candidates and apply them into the dynamic rules overlay immediately.",
+    {
+      codes: z.array(z.string()).min(1),
+    },
+    async ({ codes }) => {
+      const result = await service.approveLearning({ codes });
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Approved ${result.applied.length} candidate(s).${result.missingCodes.length > 0 ? ` Missing: ${result.missingCodes.join(", ")}` : ""}`,
+          },
+        ],
+        structuredContent: result,
+      };
+    },
+  );
+
+  server.tool(
+    "wechat_learning.reject",
+    "Reject one or more learning candidates and suppress repeated reminders for a while.",
+    {
+      codes: z.array(z.string()).min(1),
+    },
+    async ({ codes }) => {
+      const result = await service.rejectLearning({ codes });
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Rejected ${result.applied.length} candidate(s).${result.missingCodes.length > 0 ? ` Missing: ${result.missingCodes.join(", ")}` : ""}`,
+          },
+        ],
+        structuredContent: result,
+      };
+    },
+  );
+
+  server.tool(
+    "wechat_learning.snooze",
+    "Snooze one or more learning candidates so the assistant can remind again later.",
+    {
+      codes: z.array(z.string()).min(1),
+    },
+    async ({ codes }) => {
+      const result = await service.snoozeLearning({ codes });
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Snoozed ${result.applied.length} candidate(s).${result.missingCodes.length > 0 ? ` Missing: ${result.missingCodes.join(", ")}` : ""}`,
           },
         ],
         structuredContent: result,

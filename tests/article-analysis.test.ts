@@ -110,6 +110,7 @@ describe("article analysis preferences", () => {
         digestEligible: true,
         relevanceScore: 1,
         heroImages: [],
+        ruleCandidates: [],
       },
       model: {
         summary: "某黑马团队发布新的训练框架。",

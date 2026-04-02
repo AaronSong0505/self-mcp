@@ -8,6 +8,7 @@
     "build": "tsc -p tsconfig.json",
     "dev:wechat-digest-mcp": "tsx services/wechat-digest-mcp/src/index.ts",
     "run:wechat-digest-morning": "node dist/services/wechat-digest-mcp/src/run-morning.js",
+    "run:wechat-digest-followup": "node dist/services/wechat-digest-mcp/src/run-followup.js",
     "test": "vitest run"
   },
   "dependencies": {

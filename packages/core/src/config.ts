@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import YAML from "yaml";
 import type { DigestRulesConfig, LoadedServiceConfig, ServicePaths, SourceConfig } from "./types.js";
+import { mergeDigestRules, readOverlayRules } from "./rules.js";
 
 function readYamlFile<T>(filePath: string, fallback: T): T {
   if (!fs.existsSync(filePath)) {
@@ -29,6 +30,7 @@ export function resolveServicePaths(): ServicePaths {
   const articleCacheDir = path.join(dataDir, "cache", "articles");
   const imageCacheDir = path.join(dataDir, "cache", "images");
   const stateFile = path.join(dataDir, "state.sqlite");
+  const overlayRulesFile = path.join(dataDir, "rules.overlay.yaml");
 
   for (const dir of [configDir, dataDir, articleCacheDir, imageCacheDir]) {
     fs.mkdirSync(dir, { recursive: true });
@@ -41,6 +43,7 @@ export function resolveServicePaths(): ServicePaths {
     stateFile,
     articleCacheDir,
     imageCacheDir,
+    overlayRulesFile,
   };
 }
 
@@ -54,10 +57,11 @@ export function loadServiceConfig(): LoadedServiceConfig {
     path.join(paths.configDir, "wechat_digest_rules.yaml"),
     {},
   );
+  const overlayRules = readOverlayRules(paths.overlayRulesFile);
 
   return {
     paths,
     sources: (sourcesDoc.sources ?? []).filter((entry) => Boolean(entry?.id) && Boolean(entry?.discovery)),
-    rules,
+    rules: mergeDigestRules(rules, overlayRules),
   };
 }

@@ -35,6 +35,19 @@ export type DeliveryTargetConfig = {
   accountId?: string;
 };
 
+export type LearningCandidateType = "company" | "technology" | "theme";
+
+export type LearningTargetBucket =
+  | "companyWatchlist"
+  | "priorityKeywords"
+  | "includeKeywords"
+  | "labelKeyword"
+  | "newLabel";
+
+export type LearningConfidence = "high" | "medium" | "low";
+
+export type LearningCandidateStatus = "pending" | "approved" | "rejected" | "snoozed";
+
 export type ContentLabelRule = {
   label: string;
   keywords: string[];
@@ -71,6 +84,7 @@ export type ServicePaths = {
   stateFile: string;
   articleCacheDir: string;
   imageCacheDir: string;
+  overlayRulesFile: string;
 };
 
 export type LoadedServiceConfig = {
@@ -114,6 +128,19 @@ export type ImageInsight = {
   insight?: string;
 };
 
+export type RuleCandidate = {
+  candidateType: LearningCandidateType;
+  displayValue: string;
+  normalizedValue: string;
+  targetBucket: LearningTargetBucket;
+  targetLabel?: string;
+  aliases?: string[];
+  confidence: LearningConfidence;
+  rationale: string;
+  evidenceSnippet: string;
+  breakoutCandidate: boolean;
+};
+
 export type ArticleAnalysisResult = {
   summary: string;
   whyRelevant: string;
@@ -123,6 +150,7 @@ export type ArticleAnalysisResult = {
   digestEligible: boolean;
   relevanceScore: number;
   heroImages: ImageInsight[];
+  ruleCandidates: RuleCandidate[];
 };
 
 export type AnalyzeOutput = {
@@ -139,10 +167,11 @@ export type AnalyzeOutput = {
   heroImages: ImageInsight[];
   digestEligible: boolean;
   relevanceScore: number;
+  ruleCandidates: RuleCandidate[];
 };
 
 export type DigestMessage = {
-  kind: "overview" | "detail";
+  kind: "overview" | "detail" | "learning";
   title: string;
   body: string;
 };
@@ -154,6 +183,7 @@ export type BuildDigestOutput = {
   messages: DigestMessage[];
   sentCount: number;
   candidateCount: number;
+  learningCandidateCount: number;
 };
 
 export type StatusOutput = {
@@ -164,4 +194,48 @@ export type StatusOutput = {
   digestEligible: number;
   delivered: number;
   pendingDelivery: number;
+  pendingLearning: number;
+};
+
+export type LearningPendingItem = {
+  code: string;
+  status: LearningCandidateStatus;
+  candidateType: LearningCandidateType;
+  displayValue: string;
+  normalizedValue: string;
+  targetBucket: LearningTargetBucket;
+  targetLabel?: string;
+  aliases: string[];
+  confidence: LearningConfidence;
+  breakoutCandidate: boolean;
+  rationale: string;
+  evidenceSnippet: string;
+  articleCount: number;
+  evidenceArticleTitles: string[];
+  firstSeenAt: string;
+  lastSeenAt: string;
+  lastPromptedAt?: string;
+  lastFollowupAt?: string;
+  snoozedUntil?: string;
+  suppressedUntil?: string;
+};
+
+export type LearningPendingOutput = {
+  items: LearningPendingItem[];
+  status: LearningCandidateStatus | "all";
+};
+
+export type LearningActionOutput = {
+  action: "approve" | "reject" | "snooze";
+  applied: LearningPendingItem[];
+  missingCodes: string[];
+};
+
+export type LearningFollowupOutput = {
+  date: string;
+  targetId: string;
+  dryRun: boolean;
+  messages: DigestMessage[];
+  sentCount: number;
+  candidateCount: number;
 };

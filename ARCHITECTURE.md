@@ -12,11 +12,11 @@ This repository hosts Aaron's custom MCP services. The first production service 
 ## Runtime split
 
 - `self-mcp`
-  Owns deterministic business logic: source discovery, article extraction, deduplication, image extraction, analysis, labels, digest assembly, and delivery bookkeeping.
+  Owns deterministic business logic: source discovery, article extraction, deduplication, image extraction, analysis, labels, digest assembly, learning candidates, overlay rules, and delivery bookkeeping.
 - `one-company / OpenClaw`
-  Owns the conversational layer: the WeChat bot channel, persona, existing memory, and optional interactive MCP use.
+  Owns the conversational layer: the WeChat bot channel, persona, existing memory, optional interactive MCP use, and owner approvals sent from WeChat chat.
 - Windows Scheduled Task
-  Owns the production trigger at `08:45 Asia/Shanghai`.
+  Owns the production triggers at `08:45 Asia/Shanghai` for the morning digest and `19:30 Asia/Shanghai` for learning follow-up reminders.
 
 ## Production flow
 

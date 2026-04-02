@@ -6,6 +6,8 @@ Private MCP monorepo for Aaron's custom services. The first service is `wechat-d
 - extracts article body text and article images
 - deduplicates, caches, and persists article state locally
 - analyzes relevance, labels, and digest summaries
+- generates learning candidates for new companies, technologies, and themes
+- supports manual approval into a dynamic rules overlay
 - delivers morning digests through the existing OpenClaw WeChat bot
 
 ## Layout
@@ -25,6 +27,14 @@ Private MCP monorepo for Aaron's custom services. The first service is `wechat-d
 - `scripts`
   deterministic runners and Windows scheduled-task install helpers
 
+## Learning loop
+
+- `wechat_articles.analyze` can emit `ruleCandidates[]`
+- candidates are stored in sqlite and surfaced back through digest reminders
+- approvals write into `data/rules.overlay.yaml`
+- the tracked base rules stay unchanged
+- a 19:30 follow-up reminder can nudge pending approvals once per day
+
 ## Development
 
 ```powershell
@@ -38,10 +48,11 @@ pnpm dev:wechat-digest-mcp
 
 ```powershell
 pnpm build
-powershell -ExecutionPolicy Bypass -File .\scripts\run-wechat-digest.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\run-wechat-digest.ps1 -Mode morning
+powershell -ExecutionPolicy Bypass -File .\scripts\run-wechat-digest.ps1 -Mode followup -DryRun
 ```
 
-Install the daily 08:45 Windows scheduled task:
+Install the daily 08:45 morning task plus the 19:30 learning follow-up task:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\install-wechat-digest-task.ps1
@@ -64,6 +75,13 @@ Relevant environment variables:
 - `OPENCLAW_CLI_WRAPPER`
 
 If `DASHSCOPE_API_KEY` is missing, the analyzer falls back to heuristic scoring only.
+
+## Current configured sources
+
+- 新智元
+- 机器之心
+- 量子位
+- 开源星探
 
 ## Architecture
 

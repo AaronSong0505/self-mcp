@@ -109,9 +109,52 @@ export class SqliteStateStore {
         error TEXT
       );
 
+      CREATE TABLE IF NOT EXISTS rule_candidates (
+        id TEXT PRIMARY KEY,
+        short_code TEXT NOT NULL UNIQUE,
+        candidate_type TEXT NOT NULL,
+        display_value TEXT NOT NULL,
+        normalized_value TEXT NOT NULL,
+        target_bucket TEXT NOT NULL,
+        target_label TEXT,
+        aliases_json TEXT,
+        confidence TEXT NOT NULL,
+        rationale TEXT NOT NULL,
+        evidence_snippet TEXT NOT NULL,
+        breakout_candidate INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'pending',
+        first_seen_at TEXT NOT NULL,
+        last_seen_at TEXT NOT NULL,
+        last_prompted_at TEXT,
+        last_prompted_date TEXT,
+        last_followup_at TEXT,
+        last_followup_date TEXT,
+        approved_at TEXT,
+        rejected_at TEXT,
+        snoozed_until TEXT,
+        suppressed_until TEXT,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS rule_candidate_evidence (
+        id TEXT PRIMARY KEY,
+        candidate_id TEXT NOT NULL,
+        article_id TEXT NOT NULL,
+        evidence_snippet TEXT,
+        rationale TEXT,
+        seen_count INTEGER NOT NULL DEFAULT 1,
+        first_seen_at TEXT NOT NULL,
+        last_seen_at TEXT NOT NULL
+      );
+
       CREATE INDEX IF NOT EXISTS idx_articles_discovered_date ON articles(discovered_date);
       CREATE INDEX IF NOT EXISTS idx_articles_analysis_status ON articles(analysis_status);
       CREATE INDEX IF NOT EXISTS idx_deliveries_target ON deliveries(target_id, status);
+      CREATE INDEX IF NOT EXISTS idx_rule_candidates_status ON rule_candidates(status, last_seen_at);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_rule_candidates_key
+        ON rule_candidates(candidate_type, normalized_value, target_bucket, COALESCE(target_label, ''));
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_rule_candidate_evidence_pair
+        ON rule_candidate_evidence(candidate_id, article_id);
     `);
   }
 
