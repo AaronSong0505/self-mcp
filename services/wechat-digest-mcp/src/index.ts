@@ -3,6 +3,51 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { WechatDigestService } from "./service.js";
 
+function renderPendingItems(result: {
+  status: string;
+  items: Array<{
+    code: string;
+    candidateType: string;
+    displayValue: string;
+    targetBucket: string;
+    targetLabel?: string;
+    confidence: string;
+    rationale: string;
+    evidenceArticleTitles: string[];
+  }>;
+}): string {
+  if (result.items.length === 0) {
+    return `No learning candidates found for status=${result.status}.`;
+  }
+
+  const lines = result.items.map((item) => {
+    const bucket =
+      item.targetBucket === "labelKeyword" || item.targetBucket === "newLabel"
+        ? `${item.targetBucket}${item.targetLabel ? `:${item.targetLabel}` : ""}`
+        : item.targetBucket;
+    const evidence = item.evidenceArticleTitles[0] ? ` | evidence=${item.evidenceArticleTitles[0]}` : "";
+    return `- ${item.code} | ${item.candidateType} | ${item.displayValue} | ${bucket} | ${item.confidence} | ${item.rationale}${evidence}`;
+  });
+
+  return [`Learning candidates (status=${result.status}, count=${result.items.length}):`, ...lines].join("\n");
+}
+
+function renderMutationResult(action: string, result: {
+  applied: Array<{ code: string; candidateType: string; displayValue: string; status: string }>;
+  missingCodes: string[];
+}): string {
+  const lines = [`${action} ${result.applied.length} candidate(s).`];
+  if (result.applied.length > 0) {
+    lines.push(
+      ...result.applied.map((item) => `- ${item.code} | ${item.candidateType} | ${item.displayValue} | ${item.status}`),
+    );
+  }
+  if (result.missingCodes.length > 0) {
+    lines.push(`Missing: ${result.missingCodes.join(", ")}`);
+  }
+  return lines.join("\n");
+}
+
 async function main() {
   const service = await WechatDigestService.create();
   const server = new McpServer({
@@ -109,7 +154,7 @@ async function main() {
         content: [
           {
             type: "text",
-            text: `Loaded ${result.items.length} learning candidate(s) with status=${result.status}.`,
+            text: renderPendingItems(result),
           },
         ],
         structuredContent: result,
@@ -129,7 +174,7 @@ async function main() {
         content: [
           {
             type: "text",
-            text: `Approved ${result.applied.length} candidate(s).${result.missingCodes.length > 0 ? ` Missing: ${result.missingCodes.join(", ")}` : ""}`,
+            text: renderMutationResult("Approved", result),
           },
         ],
         structuredContent: result,
@@ -149,7 +194,7 @@ async function main() {
         content: [
           {
             type: "text",
-            text: `Rejected ${result.applied.length} candidate(s).${result.missingCodes.length > 0 ? ` Missing: ${result.missingCodes.join(", ")}` : ""}`,
+            text: renderMutationResult("Rejected", result),
           },
         ],
         structuredContent: result,
@@ -169,7 +214,7 @@ async function main() {
         content: [
           {
             type: "text",
-            text: `Snoozed ${result.applied.length} candidate(s).${result.missingCodes.length > 0 ? ` Missing: ${result.missingCodes.join(", ")}` : ""}`,
+            text: renderMutationResult("Snoozed", result),
           },
         ],
         structuredContent: result,
