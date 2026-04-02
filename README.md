@@ -10,10 +10,18 @@ Private MCP monorepo for Aaron's custom services. The first service is `wechat-d
 - supports manual approval into a dynamic rules overlay
 - delivers morning digests through the existing OpenClaw WeChat bot
 
+The second service is `bluesky-social-mcp`, which:
+
+- checks whether the Bluesky lane is configured
+- previews post length/facets before publishing
+- publishes reviewed posts to Bluesky through the official AT Protocol SDK
+
 ## Layout
 
 - `services/wechat-digest-mcp`
   MCP stdio server and the direct morning runner
+- `services/bluesky-social-mcp`
+  MCP stdio server for the public Bluesky social lane
 - `packages/core`
   config loading, sqlite state, canonical URLs, delivery helpers, message splitting
 - `packages/extractors`
@@ -43,6 +51,7 @@ pnpm install
 pnpm build
 pnpm test
 pnpm dev:wechat-digest-mcp
+pnpm dev:bluesky-social-mcp
 ```
 
 ## Production runner
@@ -65,6 +74,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\install-wechat-digest-task.ps
   source allowlist
 - `config/wechat_digest_rules.yaml`
   interest rules, labels, models, and delivery targets
+- `config/bluesky_social.yaml`
+  public-lane defaults for Bluesky
 
 Relevant environment variables:
 
@@ -74,8 +85,13 @@ Relevant environment variables:
 - `WECHAT_DIGEST_OPENAI_BASE_URL`
 - `DASHSCOPE_API_KEY`
 - `OPENCLAW_CLI_WRAPPER`
+- `BLUESKY_HANDLE`
+- `BLUESKY_APP_PASSWORD`
+- `BLUESKY_SERVICE`
 
 If `DASHSCOPE_API_KEY` is missing, the analyzer falls back to heuristic scoring only.
+
+If `BLUESKY_HANDLE` or `BLUESKY_APP_PASSWORD` is missing, the Bluesky lane stays in preview-only/unconfigured mode.
 
 ## Current configured sources
 
