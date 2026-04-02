@@ -123,6 +123,65 @@ export function parseHtmlListCandidates(
     .filter(Boolean) as Omit<ArticleCandidate, "articleId" | "status">[];
 }
 
+function getByPath(input: unknown, path: string): unknown {
+  return path.split(".").reduce<unknown>((current, segment) => {
+    if (!current || typeof current !== "object") {
+      return undefined;
+    }
+    return (current as Record<string, unknown>)[segment];
+  }, input);
+}
+
+export function parseJsonListCandidates(
+  raw: string,
+  source: SourceConfig,
+): Omit<ArticleCandidate, "articleId" | "status">[] {
+  if (!source.discovery.json) {
+    throw new Error(`json_list source ${source.id} is missing json selectors`);
+  }
+
+  const json = JSON.parse(raw) as unknown;
+  const selectors = source.discovery.json;
+  const list = getByPath(json, selectors.listPath);
+  const items = Array.isArray(list) ? list : [];
+  const now = nowIso();
+  const discoveredDate = toDateKey(now);
+
+  return items
+    .map((item) => {
+      if (!item || typeof item !== "object") {
+        return null;
+      }
+      const title = String(getByPath(item, selectors.titleField) ?? "").trim();
+      const linkValue = String(getByPath(item, selectors.linkField) ?? "").trim();
+      if (!title || !linkValue) {
+        return null;
+      }
+
+      const articleUrl = selectors.linkTemplate
+        ? selectors.linkTemplate.replace("{value}", encodeURIComponent(linkValue))
+        : new URL(linkValue, source.discovery.url).toString();
+      const blurb = selectors.blurbField
+        ? String(getByPath(item, selectors.blurbField) ?? "").trim()
+        : undefined;
+      const publishedRaw = selectors.publishedAtField
+        ? String(getByPath(item, selectors.publishedAtField) ?? "").trim()
+        : undefined;
+
+      return {
+        sourceId: source.id,
+        title,
+        blurb: blurb || undefined,
+        canonicalUrl: canonicalizeUrl(articleUrl),
+        articleUrl,
+        publishedAt: normalizePublishedAt(publishedRaw),
+        discoveredAt: now,
+        discoveredDate,
+      };
+    })
+    .filter(Boolean) as Omit<ArticleCandidate, "articleId" | "status">[];
+}
+
 export async function scanSource(source: SourceConfig): Promise<Omit<ArticleCandidate, "articleId" | "status">[]> {
   const body = await fetchText(source.discovery.url);
   if (source.discovery.type === "rss") {
@@ -130,6 +189,9 @@ export async function scanSource(source: SourceConfig): Promise<Omit<ArticleCand
   }
   if (source.discovery.type === "html_list") {
     return parseHtmlListCandidates(body, source);
+  }
+  if (source.discovery.type === "json_list") {
+    return parseJsonListCandidates(body, source);
   }
   throw new Error(`Unsupported discovery type: ${source.discovery.type}`);
 }

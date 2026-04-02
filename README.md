@@ -64,3 +64,14 @@ Relevant environment variables:
 - `OPENCLAW_CLI_WRAPPER`
 
 If `DASHSCOPE_API_KEY` is missing, the analyzer falls back to heuristic scoring only.
+
+## Architecture
+
+See [ARCHITECTURE.md](./ARCHITECTURE.md) for the production split between `self-mcp`, OpenClaw, and the Windows scheduled task.
+
+The first configured morning-digest sources are:
+
+- 新智元
+- 机器之心
+- 量子位
+- 开源星探

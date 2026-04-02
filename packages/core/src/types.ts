@@ -1,4 +1,4 @@
-export type DiscoveryType = "rss" | "html_list";
+export type DiscoveryType = "rss" | "html_list" | "json_list";
 
 export type HtmlListSelectors = {
   item: string;
@@ -6,6 +6,15 @@ export type HtmlListSelectors = {
   link: string;
   blurb?: string;
   publishedAt?: string;
+};
+
+export type JsonListSelectors = {
+  listPath: string;
+  titleField: string;
+  linkField: string;
+  linkTemplate?: string;
+  blurbField?: string;
+  publishedAtField?: string;
 };
 
 export type SourceConfig = {
@@ -16,6 +25,7 @@ export type SourceConfig = {
     type: DiscoveryType;
     url: string;
     selectors?: HtmlListSelectors;
+    json?: JsonListSelectors;
   };
 };
 

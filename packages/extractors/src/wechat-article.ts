@@ -48,6 +48,15 @@ function cleanContentText(text: string): string {
     .trim();
 }
 
+function parsePublishedAt(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const normalized = value.replace(/\//g, "-").trim();
+  const parsed = new Date(normalized);
+  return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
+}
+
 function parsePublishedAtFromHtml(html: string, $: cheerio.CheerioAPI): string | undefined {
   const explicit = $("#publish_time").text().trim();
   if (explicit) {
@@ -115,6 +124,92 @@ export function parseArticleHtml(html: string, pageUrl: string): ExtractedArticl
   };
 }
 
+function parseQbitaiArticleHtml(html: string, pageUrl: string): ExtractedArticle {
+  const $ = cheerio.load(html);
+  const root = $(".article").first().length ? $(".article").first() : $("article").first();
+  const contentRoot = root.clone();
+  contentRoot.find(".article_info, .zhaiyao, .line_font, .person_box, .tags, .share_pc, .share_box").remove();
+
+  const title = root.find("h1").first().text().trim() || $("title").text().trim();
+  const author = root.find(".article_info .author a").last().text().trim() || undefined;
+  const publishedAt = parsePublishedAt(
+    `${root.find(".article_info .date").first().text().trim()} ${root.find(".article_info .time").first().text().trim()}`.trim(),
+  );
+  const blurb = cleanContentText(root.find(".zhaiyao").first().text()).slice(0, 160).trim() || undefined;
+  const images = uniqueImages(
+    contentRoot
+      .find("img")
+      .toArray()
+      .map((img) => ({
+        url: normalizeImageUrl($(img).attr("src"), pageUrl) ?? "",
+        width: Number($(img).attr("width") || 0) || undefined,
+        height: Number($(img).attr("height") || 0) || undefined,
+      })),
+  );
+  const contentHtml = contentRoot.html()?.trim() || "";
+  const contentText = cleanContentText(contentRoot.text());
+
+  return {
+    title,
+    author,
+    publishedAt,
+    contentText,
+    contentHtml,
+    blurb,
+    images,
+    rawUrl: pageUrl,
+  };
+}
+
+function parseJiqizhixinArticlePayload(raw: string, pageUrl: string): ExtractedArticle {
+  const payload = JSON.parse(raw) as {
+    title?: string;
+    published_at?: string;
+    description?: string;
+    cover_image_url?: string;
+    content?: string;
+    author?: { name?: string };
+    seo?: { image?: string };
+  };
+  const contentHtml = payload.content ?? "";
+  const $ = cheerio.load(`<article>${contentHtml}</article>`);
+  const root = $("article").first();
+  const contentText = cleanContentText(root.text());
+  const images = uniqueImages(
+    [
+      payload.cover_image_url,
+      payload.seo?.image,
+      ...root
+        .find("img")
+        .toArray()
+        .map((img) => $(img).attr("src")),
+    ]
+      .filter(Boolean)
+      .map((src) => ({ url: normalizeImageUrl(src, pageUrl) ?? "" })),
+  );
+
+  return {
+    title: String(payload.title ?? "").trim(),
+    author: payload.author?.name?.trim() || undefined,
+    publishedAt: parsePublishedAt(payload.published_at),
+    contentText,
+    contentHtml,
+    blurb: payload.description?.trim() || contentText.slice(0, 160).trim() || undefined,
+    images,
+    rawUrl: pageUrl,
+  };
+}
+
+function extractJsonFromBrowserHtml(html: string): string | undefined {
+  const $ = cheerio.load(html);
+  const pre = $("pre").first().text().trim();
+  if (pre.startsWith("{")) {
+    return pre;
+  }
+  const bodyText = $("body").text().trim();
+  return bodyText.startsWith("{") ? bodyText : undefined;
+}
+
 function detectBrowserExecutable(): string | undefined {
   const envPath = process.env.WECHAT_DIGEST_BROWSER_EXECUTABLE;
   if (envPath && fs.existsSync(envPath)) {
@@ -152,12 +247,42 @@ export async function extractArticle(
   url: string,
   opts: { browserFallback?: boolean } = {},
 ): Promise<ExtractedArticle> {
+  const parsedUrl = new URL(url);
+  if (parsedUrl.hostname.endsWith("jiqizhixin.com") && parsedUrl.pathname.startsWith("/articles/")) {
+    const slug = parsedUrl.pathname.split("/").filter(Boolean).pop();
+    if (slug) {
+      const apiUrl = `https://www.jiqizhixin.com/api/article_library/articles/${slug}`;
+      const response = await fetch(apiUrl, {
+        headers: {
+          "user-agent": "Mozilla/5.0",
+          accept: "application/json, text/plain, */*",
+          "x-requested-with": "XMLHttpRequest",
+          referer: url,
+        },
+      });
+      if (!response.ok) {
+        throw new Error(`Failed to fetch article API ${apiUrl}: ${response.status}`);
+      }
+      let payload = await response.text();
+      if (payload.trim().startsWith("<")) {
+        const browserHtml = await fetchViaBrowser(apiUrl);
+        const browserPayload = browserHtml ? extractJsonFromBrowserHtml(browserHtml) : undefined;
+        if (browserPayload) {
+          payload = browserPayload;
+        }
+      }
+      return parseJiqizhixinArticlePayload(payload, url);
+    }
+  }
+
   const response = await fetch(url, { headers: DEFAULT_HEADERS });
   if (!response.ok) {
     throw new Error(`Failed to fetch article ${url}: ${response.status}`);
   }
   let html = await response.text();
-  let extracted = parseArticleHtml(html, url);
+  let extracted = parsedUrl.hostname.endsWith("qbitai.com")
+    ? parseQbitaiArticleHtml(html, url)
+    : parseArticleHtml(html, url);
   if (extracted.contentText.length >= 80 || opts.browserFallback === false) {
     return extracted;
   }
@@ -167,6 +292,8 @@ export async function extractArticle(
     return extracted;
   }
   html = browserHtml;
-  extracted = parseArticleHtml(html, url);
+  extracted = parsedUrl.hostname.endsWith("qbitai.com")
+    ? parseQbitaiArticleHtml(html, url)
+    : parseArticleHtml(html, url);
   return extracted;
 }

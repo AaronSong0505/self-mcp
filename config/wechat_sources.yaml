@@ -1,23 +1,50 @@
-sources: []
+sources:
+  - id: xinzhiyuan
+    displayName: 新智元
+    enabled: true
+    discovery:
+      type: html_list
+      url: https://aiera.com.cn/
+      selectors:
+        item: article.entry-card
+        title: h2.entry-title a
+        link: h2.entry-title a
+        publishedAt: time.ct-meta-element-date
 
-# 示例：
-# sources:
-#   - id: sample-rss
-#     displayName: 示例 RSS
-#     enabled: false
-#     discovery:
-#       type: rss
-#       url: https://example.com/feed.xml
-#
-#   - id: sample-list
-#     displayName: 示例列表页
-#     enabled: false
-#     discovery:
-#       type: html_list
-#       url: https://example.com/articles
-#       selectors:
-#         item: article
-#         title: h2
-#         link: h2 a
-#         blurb: p.summary
-#         publishedAt: time
+  - id: jiqizhixin
+    displayName: 机器之心
+    enabled: true
+    discovery:
+      type: json_list
+      url: https://www.jiqizhixin.com/api/article_library/articles.json?page=1&per=20
+      json:
+        listPath: articles
+        titleField: title
+        linkField: slug
+        linkTemplate: https://www.jiqizhixin.com/articles/{value}
+        blurbField: content
+        publishedAtField: publishedAt
+
+  - id: qbitai
+    displayName: 量子位
+    enabled: true
+    discovery:
+      type: html_list
+      url: https://www.qbitai.com/
+      selectors:
+        item: .article_list .picture_text
+        title: .text_box h4 a
+        link: .text_box h4 a
+        blurb: .text_box p
+
+  - id: opensource-scout
+    displayName: 开源星探
+    enabled: true
+    discovery:
+      type: html_list
+      url: https://developer.volcengine.com/user/1303377297282596
+      selectors:
+        item: '[class*="article-item-container"]'
+        title: '[class*="article-title"] a'
+        link: '[class*="article-title"] a'
+        blurb: '[class*="article-abstract"]'
