@@ -994,8 +994,18 @@ export class WechatDigestService {
     target: DeliveryTargetConfig;
     messages: DigestMessage[];
     resolveArticleId: (message: DigestMessage) => string | null;
-  }): number {
-    const delivery = sendDigestMessages({
+  }): Promise<number> {
+    return this.persistSentMessagesInternal(params);
+  }
+
+  private async persistSentMessagesInternal(params: {
+    digestId: string;
+    targetId: string;
+    target: DeliveryTargetConfig;
+    messages: DigestMessage[];
+    resolveArticleId: (message: DigestMessage) => string | null;
+  }): Promise<number> {
+    const delivery = await sendDigestMessages({
       wrapperPath: process.env.OPENCLAW_CLI_WRAPPER ?? "",
       target: params.target,
       messages: params.messages,
@@ -1016,7 +1026,7 @@ export class WechatDigestService {
           params.targetId,
           params.target.channel,
           params.target.accountId ?? null,
-          params.target.to,
+          delivery.recipient,
           index,
           nowIso(),
         ],
@@ -1085,7 +1095,7 @@ export class WechatDigestService {
         targetId: digestTargetId,
         messages: expandedMessages,
       });
-      digestSentCount = this.persistSentMessages({
+      digestSentCount = await this.persistSentMessages({
         digestId,
         targetId: digestTargetId,
         target: digestTarget,
@@ -1173,7 +1183,7 @@ export class WechatDigestService {
         ],
       );
 
-      const delivery = sendDigestMessages({
+      const delivery = await sendDigestMessages({
         wrapperPath: process.env.OPENCLAW_CLI_WRAPPER ?? "",
         target: confirmedTarget,
         messages,
@@ -1199,7 +1209,7 @@ export class WechatDigestService {
             targetId,
             confirmedTarget.channel,
             confirmedTarget.accountId ?? null,
-            confirmedTarget.to,
+            delivery.recipient,
             index,
             nowIso(),
           ],
@@ -1273,7 +1283,7 @@ export class WechatDigestService {
         targetId: followupTargetId,
         messages: followupMessages,
       });
-      followupSentCount = this.persistSentMessages({
+      followupSentCount = await this.persistSentMessages({
         digestId: followupDigestId,
         targetId: followupTargetId,
         target: followupTarget,
