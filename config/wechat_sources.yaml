@@ -1,0 +1,23 @@
+sources: []
+
+# 示例：
+# sources:
+#   - id: sample-rss
+#     displayName: 示例 RSS
+#     enabled: false
+#     discovery:
+#       type: rss
+#       url: https://example.com/feed.xml
+#
+#   - id: sample-list
+#     displayName: 示例列表页
+#     enabled: false
+#     discovery:
+#       type: html_list
+#       url: https://example.com/articles
+#       selectors:
+#         item: article
+#         title: h2
+#         link: h2 a
+#         blurb: p.summary
+#         publishedAt: time

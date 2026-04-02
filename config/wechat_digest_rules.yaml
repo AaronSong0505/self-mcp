@@ -1,0 +1,55 @@
+analysis:
+  baseUrl: https://coding.dashscope.aliyuncs.com/v1
+  articleModel: qwen3.5-plus
+  visionModel: qwen3.5-plus
+  maxImages: 2
+  summaryMaxChars: 220
+
+interests:
+  objective: >
+    这是 Aaron 的个人晨报。优先保留能节省他时间、提供新信息、或者与 AI、Agent、
+    编码、产品、商业化、工作流自动化、效率系统有关的内容。泛鸡汤、纯营销、重复旧闻、
+    或信息密度过低的内容要降级。
+  includeKeywords:
+    - AI
+    - Agent
+    - MCP
+    - OpenClaw
+    - 微信
+    - 公众号
+    - 编码
+    - 工程
+    - 工作流
+    - 自动化
+    - 产品
+    - 商业化
+  excludeKeywords:
+    - 抽奖
+    - 招聘
+    - 广告
+    - 促销
+    - 转发
+
+labels:
+  list:
+    - 必读
+    - 值得看
+    - 信息备查
+    - 略过
+  content:
+    - label: AI/LLM
+      keywords: [AI, LLM, 大模型, 模型, 推理]
+    - label: Agent/MCP
+      keywords: [Agent, 智能体, MCP, 工作流, 自动化]
+    - label: Coding/Engineering
+      keywords: [编码, 工程, 开发, GitHub, Repo, SDK, 框架]
+    - label: Product/Strategy
+      keywords: [产品, 战略, 商业化, 增长, 运营]
+    - label: WeChat/Ecosystem
+      keywords: [微信, 公众号, 小程序, 企业微信]
+
+deliveryTargets:
+  aaron-wechat:
+    channel: openclaw-weixin
+    accountId: 485b29e565ea-im-bot
+    to: o9cq80whdkdcefzaa0fjfapvjpc4@im.wechat

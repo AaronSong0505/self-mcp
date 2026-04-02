@@ -1,0 +1,29 @@
+{
+  "name": "self-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.16.1",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev:wechat-digest-mcp": "tsx services/wechat-digest-mcp/src/index.ts",
+    "run:wechat-digest-morning": "node dist/services/wechat-digest-mcp/src/run-morning.js",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.18.0",
+    "cheerio": "^1.1.2",
+    "fast-xml-parser": "^5.3.0",
+    "openai": "^5.12.2",
+    "playwright-core": "^1.55.0",
+    "sql.js": "^1.13.0",
+    "yaml": "^2.8.1",
+    "zod": "^4.1.5"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  }
+}
