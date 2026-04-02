@@ -35,18 +35,28 @@ function heuristicAnalysis(params: {
   const title = params.article.title;
   const joinedText = `${title}\n${params.article.blurb ?? ""}\n${params.article.contentText}`;
   const includeHits = collectKeywordMatches(joinedText, params.rules.interests?.includeKeywords ?? []);
+  const priorityHits = collectKeywordMatches(joinedText, params.rules.interests?.priorityKeywords ?? []);
+  const deprioritizeHits = collectKeywordMatches(joinedText, params.rules.interests?.deprioritizeKeywords ?? []);
   const excludeHits = collectKeywordMatches(joinedText, params.rules.interests?.excludeKeywords ?? []);
-  const contentLabels =
+  const matchedRules =
     params.rules.labels?.content
       ?.filter((rule) => collectKeywordMatches(joinedText, rule.keywords).length > 0)
-      .map((rule) => rule.label) ?? [];
+      ?? [];
+  const contentLabels = matchedRules.map((rule) => rule.label);
+  const weightedLabelScore = matchedRules.reduce((sum, rule) => sum + (rule.weight ?? 1), 0);
 
   const paragraphs = pickParagraphs(params.article.contentText, 3);
   const keyTakeaways = paragraphs.length > 0 ? paragraphs.map((entry) => truncate(entry, 90)) : [truncate(title, 90)];
   const summarySource = paragraphs.slice(0, 2).join(" ");
   const summary = truncate(summarySource || params.article.blurb || title, runtime.summaryMaxChars);
 
-  const score = includeHits.length * 2 + contentLabels.length + (params.imageInsights.length > 0 ? 1 : 0) - excludeHits.length * 3;
+  const score =
+    includeHits.length * 2 +
+    priorityHits.length * 3 +
+    weightedLabelScore +
+    (params.imageInsights.length > 0 ? 1 : 0) -
+    deprioritizeHits.length * 1.5 -
+    excludeHits.length * 3;
   const listLabel =
     excludeHits.length > 0 && includeHits.length === 0
       ? "略过"
@@ -58,7 +68,9 @@ function heuristicAnalysis(params: {
             ? "信息备查"
             : "略过";
   const whyRelevant =
-    includeHits.length > 0
+    priorityHits.length > 0
+      ? `命中高优先级技术关键词：${priorityHits.join("、")}。`
+      : includeHits.length > 0
       ? `命中关注关键词：${includeHits.join("、")}。`
       : contentLabels.length > 0
         ? `属于 ${contentLabels.join(" / ")} 类内容。`

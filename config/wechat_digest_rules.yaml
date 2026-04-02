@@ -7,22 +7,80 @@ analysis:
 
 interests:
   objective: >
-    这是 Aaron 的个人晨报。优先保留能节省他时间、提供新信息、或者与 AI、Agent、
-    编码、产品、商业化、工作流自动化、效率系统有关的内容。泛鸡汤、纯营销、重复旧闻、
-    或信息密度过低的内容要降级。
+    这是 Aaron 的个人 AI 技术晨报。优先保留与 AI 技术进展、强化学习、算法、模型训练、
+    推理、评测、论文、Agent 基础设施、开源实现和工程落地有关的高信息密度内容。产品发布、
+    融资、市值、营销包装类新闻只有在技术含量明显较高时才保留。
   includeKeywords:
     - AI
+    - LLM
     - Agent
     - MCP
-    - OpenClaw
-    - 微信
-    - 公众号
+    - 强化学习
+    - RL
+    - PPO
+    - DPO
+    - GRPO
+    - 奖励模型
+    - reward model
+    - 对齐
+    - alignment
+    - policy
+    - actor-critic
+    - world model
+    - MCTS
+    - 推理
+    - reasoning
+    - 训练
+    - pretrain
+    - pretraining
+    - finetune
+    - 微调
+    - inference
+    - benchmark
+    - 评测
+    - 数据集
+    - dataset
+    - arxiv
+    - paper
+    - 开源
     - 编码
     - 工程
+    - GitHub
+    - Repo
+    - SDK
+    - 框架
     - 工作流
     - 自动化
-    - 产品
-    - 商业化
+  priorityKeywords:
+    - 强化学习
+    - RL
+    - PPO
+    - DPO
+    - GRPO
+    - 奖励模型
+    - reward model
+    - 对齐
+    - alignment
+    - actor-critic
+    - world model
+    - MCTS
+    - benchmark
+    - 评测
+    - arxiv
+    - 论文
+    - paper
+    - 数据集
+    - dataset
+    - reasoning
+  deprioritizeKeywords:
+    - 融资
+    - 估值
+    - 股价
+    - 市值
+    - 营销
+    - 品牌
+    - 发布会
+    - 促销
   excludeKeywords:
     - 抽奖
     - 招聘
@@ -37,16 +95,27 @@ labels:
     - 信息备查
     - 略过
   content:
+    - label: RL/Algorithms
+      keywords: [强化学习, RL, PPO, DPO, GRPO, 奖励模型, reward model, 对齐, alignment, actor-critic, value function, policy gradient, MCTS, world model]
+      weight: 3
     - label: AI/LLM
-      keywords: [AI, LLM, 大模型, 模型, 推理]
+      keywords: [AI, LLM, 大模型, 模型, 推理, reasoning, 多模态, MoE]
+      weight: 2
+    - label: Research/Papers
+      keywords: [论文, paper, arxiv, benchmark, SOTA, ablation, dataset, 数据集, 评测, evaluation]
+      weight: 2
     - label: Agent/MCP
       keywords: [Agent, 智能体, MCP, 工作流, 自动化]
+      weight: 1.5
     - label: Coding/Engineering
       keywords: [编码, 工程, 开发, GitHub, Repo, SDK, 框架]
+      weight: 1.5
     - label: Product/Strategy
       keywords: [产品, 战略, 商业化, 增长, 运营]
+      weight: 0.5
     - label: WeChat/Ecosystem
       keywords: [微信, 公众号, 小程序, 企业微信]
+      weight: 0.5
 
 deliveryTargets:
   aaron-wechat:

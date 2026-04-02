@@ -38,6 +38,7 @@ export type DeliveryTargetConfig = {
 export type ContentLabelRule = {
   label: string;
   keywords: string[];
+  weight?: number;
 };
 
 export type DigestRulesConfig = {
@@ -51,6 +52,8 @@ export type DigestRulesConfig = {
   interests?: {
     objective?: string;
     includeKeywords?: string[];
+    priorityKeywords?: string[];
+    deprioritizeKeywords?: string[];
     excludeKeywords?: string[];
   };
   labels?: {
