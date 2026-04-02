@@ -439,6 +439,7 @@ export class WechatDigestService {
           SELECT article_id FROM deliveries
           WHERE target_id = ?
             AND status = 'sent'
+            AND article_id IS NOT NULL
         )
       ORDER BY COALESCE(relevance_score, 0) DESC, COALESCE(published_at, updated_at) DESC
       `,
@@ -548,9 +549,10 @@ export class WechatDigestService {
     const delivered = Number(
       this.store.get<{ count: number }>(
         `
-        SELECT COUNT(*) AS count FROM deliveries
+        SELECT COUNT(DISTINCT article_id) AS count FROM deliveries
         WHERE target_id = 'aaron-wechat'
           AND status = 'sent'
+          AND article_id IS NOT NULL
           AND sent_at LIKE ?
         `,
         [`${date}%`],
