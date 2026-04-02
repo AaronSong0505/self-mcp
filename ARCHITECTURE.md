@@ -16,7 +16,7 @@ This repository hosts Aaron's custom MCP services. The first production service 
 - `one-company / OpenClaw`
   Owns the conversational layer: the WeChat bot channel, persona, existing memory, optional interactive MCP use, and owner approvals sent from WeChat chat.
 - Windows Scheduled Task
-  Owns the production triggers at `08:45 Asia/Shanghai` for the morning digest and `19:30 Asia/Shanghai` for learning follow-up reminders.
+  Owns the production triggers at `08:45 Asia/Shanghai` for the morning digest, `18:40 Asia/Shanghai` for the evening digest, and `19:30 Asia/Shanghai` for learning follow-up reminders.
 
 ## Production flow
 
@@ -24,6 +24,7 @@ This repository hosts Aaron's custom MCP services. The first production service 
 flowchart TD
     A[08:45 Scheduled Task] --> B[run-wechat-digest.ps1]
     B --> C[wechat-digest-mcp runner]
+    A2[18:40 Scheduled Task] --> B
     C --> D[Scan configured sources]
     D --> E[Normalize and dedupe]
     E --> F[Fetch article body and images]

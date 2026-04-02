@@ -34,6 +34,7 @@ Private MCP monorepo for Aaron's custom services. The first service is `wechat-d
 - approvals write into `data/rules.overlay.yaml`
 - the tracked base rules stay unchanged
 - a 19:30 follow-up reminder can nudge pending approvals once per day
+- production digest delivery now runs twice daily at 08:45 and 18:40 Asia/Shanghai
 
 ## Development
 
@@ -52,7 +53,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run-wechat-digest.ps1 -Mode m
 powershell -ExecutionPolicy Bypass -File .\scripts\run-wechat-digest.ps1 -Mode followup -DryRun
 ```
 
-Install the daily 08:45 morning task plus the 19:30 learning follow-up task:
+Install the daily 08:45 morning digest task, the 18:40 evening digest task, and the 19:30 learning follow-up task:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\install-wechat-digest-task.ps1
