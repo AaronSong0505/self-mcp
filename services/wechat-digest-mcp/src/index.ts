@@ -5,6 +5,9 @@ import { WechatDigestService } from "./service.js";
 
 function renderPendingItems(result: {
   status: string;
+  dateField?: string;
+  dateFrom?: string;
+  dateTo?: string;
   items: Array<{
     code: string;
     candidateType: string;
@@ -18,10 +21,15 @@ function renderPendingItems(result: {
     breakoutCandidate: boolean;
     articleCount: number;
     evidenceArticleTitles: string[];
+    approvedAt?: string;
   }>;
 }): string {
   if (result.items.length === 0) {
-    return `No learning candidates found for status=${result.status}.`;
+    const emptyFilter =
+      result.dateFrom || result.dateTo
+        ? ` with ${result.dateField ?? "seen"} in ${result.dateFrom ?? "..." }..${result.dateTo ?? "..."}`
+        : "";
+    return `No learning candidates found for status=${result.status}${emptyFilter}.`;
   }
 
   const lines = result.items.map((item) => {
@@ -32,6 +40,7 @@ function renderPendingItems(result: {
     const evidenceTitle = item.evidenceArticleTitles[0] ? `Source: ${item.evidenceArticleTitles[0]}` : "";
     const aliases = item.aliases.length > 0 ? `Aliases: ${item.aliases.join(" / ")}` : "";
     const breakout = item.breakoutCandidate ? "Breakout: yes" : "";
+    const approvedAt = item.approvedAt ? `ApprovedAt: ${item.approvedAt}` : "";
     return [
       `- ${item.code} | ${item.candidateType} | ${item.displayValue}`,
       `  Target: ${bucket} | Confidence: ${item.confidence} | EvidenceCount: ${item.articleCount}`,
@@ -39,13 +48,18 @@ function renderPendingItems(result: {
       `  EvidenceSnippet: ${item.evidenceSnippet}`,
       evidenceTitle ? `  ${evidenceTitle}` : "",
       aliases ? `  ${aliases}` : "",
+      approvedAt ? `  ${approvedAt}` : "",
       breakout ? `  ${breakout}` : "",
     ]
       .filter(Boolean)
       .join("\n");
   });
 
-  return [`Learning candidates (status=${result.status}, count=${result.items.length}):`, ...lines].join("\n");
+  const headerFilter =
+    result.dateFrom || result.dateTo
+      ? `, ${result.dateField ?? "seen"}=${result.dateFrom ?? "..."}..${result.dateTo ?? "..."}`
+      : "";
+  return [`Learning candidates (status=${result.status}${headerFilter}, count=${result.items.length}):`, ...lines].join("\n");
 }
 
 function renderMutationResult(action: string, result: {
@@ -163,9 +177,13 @@ async function main() {
     {
       status: z.enum(["pending", "approved", "rejected", "snoozed", "all"]).optional(),
       limit: z.number().int().min(1).max(50).optional(),
+      date: z.string().optional(),
+      dateFrom: z.string().optional(),
+      dateTo: z.string().optional(),
+      dateField: z.enum(["seen", "approved", "prompted", "followup"]).optional(),
     },
-    async ({ status, limit }) => {
-      const result = await service.pendingLearning({ status, limit });
+    async ({ status, limit, date, dateFrom, dateTo, dateField }) => {
+      const result = await service.pendingLearning({ status, limit, date, dateFrom, dateTo, dateField });
       return {
         content: [
           {

@@ -47,6 +47,7 @@ export type LearningTargetBucket =
 export type LearningConfidence = "high" | "medium" | "low";
 
 export type LearningCandidateStatus = "pending" | "approved" | "rejected" | "snoozed";
+export type LearningDateField = "seen" | "approved" | "prompted" | "followup";
 
 export type ContentLabelRule = {
   label: string;
@@ -214,6 +215,8 @@ export type LearningPendingItem = {
   evidenceArticleTitles: string[];
   firstSeenAt: string;
   lastSeenAt: string;
+  approvedAt?: string;
+  rejectedAt?: string;
   lastPromptedAt?: string;
   lastFollowupAt?: string;
   snoozedUntil?: string;
@@ -223,6 +226,9 @@ export type LearningPendingItem = {
 export type LearningPendingOutput = {
   items: LearningPendingItem[];
   status: LearningCandidateStatus | "all";
+  dateField?: LearningDateField;
+  dateFrom?: string;
+  dateTo?: string;
 };
 
 export type LearningActionOutput = {

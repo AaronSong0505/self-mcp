@@ -9,6 +9,7 @@ import type {
   LearningActionOutput,
   LearningCandidateStatus,
   LearningConfidence,
+  LearningDateField,
   LearningFollowupOutput,
   LearningPendingItem,
   LearningPendingOutput,
@@ -60,6 +61,10 @@ type StatusParams = {
 type PendingParams = {
   status?: LearningCandidateStatus | "all";
   limit?: number;
+  date?: string;
+  dateFrom?: string;
+  dateTo?: string;
+  dateField?: LearningDateField;
 };
 
 type ActionParams = {
@@ -314,11 +319,27 @@ export class WechatDigestService {
       evidenceArticleTitles: evidence.map((entry) => entry.title ?? entry.article_id).slice(0, 3),
       firstSeenAt: row.first_seen_at,
       lastSeenAt: row.last_seen_at,
+      ...(row.approved_at ? { approvedAt: row.approved_at } : {}),
+      ...(row.rejected_at ? { rejectedAt: row.rejected_at } : {}),
       ...(row.last_prompted_at ? { lastPromptedAt: row.last_prompted_at } : {}),
       ...(row.last_followup_at ? { lastFollowupAt: row.last_followup_at } : {}),
       ...(row.snoozed_until ? { snoozedUntil: row.snoozed_until } : {}),
       ...(row.suppressed_until ? { suppressedUntil: row.suppressed_until } : {}),
     };
+  }
+
+  private getCandidateTimestampByField(row: DbCandidateRow, field: LearningDateField): string | null {
+    switch (field) {
+      case "approved":
+        return row.approved_at;
+      case "prompted":
+        return row.last_prompted_at;
+      case "followup":
+        return row.last_followup_at;
+      case "seen":
+      default:
+        return row.last_seen_at;
+    }
   }
 
   private shouldPromptCandidate(row: DbCandidateRow, articleCount: number): boolean {
@@ -1276,20 +1297,44 @@ export class WechatDigestService {
     this.ensureLearningStatusesCurrent();
     const pendingStatus = params.status ?? "pending";
     const pendingLimit = Math.min(Math.max(params.limit ?? 20, 1), 50);
+    const pendingDateField = params.dateField ?? (pendingStatus === "approved" ? "approved" : "seen");
+    const pendingDateFrom = params.date ?? params.dateFrom;
+    const pendingDateTo = params.date ?? params.dateTo;
     const pendingRows =
       pendingStatus === "all"
         ? this.store.all<DbCandidateRow>(
-            "SELECT * FROM rule_candidates ORDER BY last_seen_at DESC LIMIT ?",
-            [pendingLimit],
+            "SELECT * FROM rule_candidates ORDER BY COALESCE(approved_at, last_seen_at) DESC LIMIT 200",
           )
         : this.store.all<DbCandidateRow>(
-            "SELECT * FROM rule_candidates WHERE status = ? ORDER BY last_seen_at DESC LIMIT ?",
-            [pendingStatus, pendingLimit],
+            "SELECT * FROM rule_candidates WHERE status = ? ORDER BY COALESCE(approved_at, last_seen_at) DESC LIMIT 200",
+            [pendingStatus],
           );
+    const filteredRows = pendingRows
+      .filter((row) => {
+        if (!pendingDateFrom && !pendingDateTo) {
+          return true;
+        }
+        const timestamp = this.getCandidateTimestampByField(row, pendingDateField);
+        if (!timestamp) {
+          return false;
+        }
+        const dateKey = toDateKey(timestamp);
+        if (pendingDateFrom && dateKey < pendingDateFrom) {
+          return false;
+        }
+        if (pendingDateTo && dateKey > pendingDateTo) {
+          return false;
+        }
+        return true;
+      })
+      .slice(0, pendingLimit);
 
     return {
-      items: pendingRows.map((row) => this.toPendingItem(row)),
+      items: filteredRows.map((row) => this.toPendingItem(row)),
       status: pendingStatus,
+      ...(pendingDateFrom ? { dateFrom: pendingDateFrom } : {}),
+      ...(pendingDateTo ? { dateTo: pendingDateTo } : {}),
+      ...(pendingDateFrom || pendingDateTo ? { dateField: pendingDateField } : {}),
     };
   }
 

@@ -192,4 +192,98 @@ describe("learning candidate workflow", () => {
     expect(revokedOverlayText).not.toContain("BlackForest Labs");
     expect(revokedOverlayText).not.toContain("BFL");
   });
+
+  it("filters approved learning candidates by local date window", async () => {
+    const root = createTempRoot();
+    writeConfig(root);
+    const service = await createService(root);
+    const store = getStore(service);
+
+    store.run(
+      `
+      INSERT INTO rule_candidates (
+        id, short_code, candidate_type, display_value, normalized_value, target_bucket, target_label,
+        aliases_json, confidence, rationale, evidence_snippet, breakout_candidate, status,
+        first_seen_at, last_seen_at, last_prompted_at, last_prompted_date,
+        last_followup_at, last_followup_date, approved_at, rejected_at,
+        snoozed_until, suppressed_until, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, NULL, NULL, NULL, ?)
+      `,
+      [
+        "candidate-today",
+        "L21",
+        "technology",
+        "SeqWM",
+        "seqwm",
+        "includeKeywords",
+        null,
+        JSON.stringify([]),
+        "medium",
+        "Recent world-model method worth tracking",
+        "SeqWM is relevant to RL planning",
+        0,
+        "approved",
+        "2026-04-02T08:00:00.000Z",
+        "2026-04-02T08:00:00.000Z",
+        "2026-04-02T08:00:00.000Z",
+        "2026-04-02T08:00:00.000Z",
+      ],
+    );
+
+    store.run(
+      `
+      INSERT INTO rule_candidates (
+        id, short_code, candidate_type, display_value, normalized_value, target_bucket, target_label,
+        aliases_json, confidence, rationale, evidence_snippet, breakout_candidate, status,
+        first_seen_at, last_seen_at, last_prompted_at, last_prompted_date,
+        last_followup_at, last_followup_date, approved_at, rejected_at,
+        snoozed_until, suppressed_until, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, NULL, NULL, NULL, ?)
+      `,
+      [
+        "candidate-yesterday",
+        "L22",
+        "company",
+        "Moonshot AI",
+        "moonshot ai",
+        "companyWatchlist",
+        null,
+        JSON.stringify(["Kimi"]),
+        "high",
+        "Important AI company signal",
+        "Kimi shipped a notable technical update",
+        1,
+        "approved",
+        "2026-04-01T08:00:00.000Z",
+        "2026-04-01T08:00:00.000Z",
+        "2026-04-01T08:00:00.000Z",
+        "2026-04-01T08:00:00.000Z",
+      ],
+    );
+
+    const today = await service.pendingLearning({
+      status: "approved",
+      date: "2026-04-02",
+      dateField: "approved",
+      limit: 10,
+    });
+    expect(today.items.map((item) => item.code)).toEqual(["L21"]);
+
+    const yesterday = await service.pendingLearning({
+      status: "approved",
+      date: "2026-04-01",
+      dateField: "approved",
+      limit: 10,
+    });
+    expect(yesterday.items.map((item) => item.code)).toEqual(["L22"]);
+
+    const range = await service.pendingLearning({
+      status: "approved",
+      dateFrom: "2026-04-01",
+      dateTo: "2026-04-02",
+      dateField: "approved",
+      limit: 10,
+    });
+    expect(range.items.map((item) => item.code)).toEqual(["L21", "L22"]);
+  });
 });
