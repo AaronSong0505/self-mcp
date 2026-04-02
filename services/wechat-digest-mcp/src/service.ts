@@ -22,6 +22,7 @@ import { sendDigestMessages } from "../../../packages/core/src/delivery.js";
 import { expandDigestMessages } from "../../../packages/core/src/message-split.js";
 import {
   applyCandidateToOverlayRules,
+  removeCandidateFromOverlayRules,
   readOverlayRules,
   ruleCandidateAlreadyCovered,
   writeOverlayRules,
@@ -272,6 +273,28 @@ export class WechatDigestService {
     );
   }
 
+  private rowToRuleCandidate(row: DbCandidateRow): RuleCandidate {
+    return {
+      candidateType: row.candidate_type,
+      displayValue: row.display_value,
+      normalizedValue: row.normalized_value,
+      targetBucket: row.target_bucket,
+      ...(row.target_label ? { targetLabel: row.target_label } : {}),
+      aliases: parseJsonArray(row.aliases_json),
+      confidence: row.confidence,
+      rationale: row.rationale,
+      evidenceSnippet: row.evidence_snippet,
+      breakoutCandidate: row.breakout_candidate === 1,
+    };
+  }
+
+  private formatCandidateTarget(item: Pick<LearningPendingItem, "targetBucket" | "targetLabel">): string {
+    if (item.targetBucket === "labelKeyword" || item.targetBucket === "newLabel") {
+      return `${item.targetBucket}${item.targetLabel ? `:${item.targetLabel}` : ""}`;
+    }
+    return item.targetBucket;
+  }
+
   private toPendingItem(row: DbCandidateRow): LearningPendingItem {
     const evidence = this.candidateArticles(row.id);
     return {
@@ -518,12 +541,21 @@ export class WechatDigestService {
 
     const reminderLines = params.rows.map((row) => {
       const item = this.toPendingItem(row);
-      const reminderBucket =
-        item.targetBucket === "labelKeyword" || item.targetBucket === "newLabel"
-          ? `${item.targetBucket}${item.targetLabel ? `:${item.targetLabel}` : ""}`
-          : item.targetBucket;
-      const reminderEvidence = item.evidenceArticleTitles[0] ? `；证据：${item.evidenceArticleTitles[0]}` : "";
-      return `- ${item.code} [${item.candidateType}/${item.confidence}] ${item.displayValue} -> ${reminderBucket}\n  理由：${item.rationale}${reminderEvidence}`;
+      const reminderBucket = this.formatCandidateTarget(item);
+      const reminderEvidenceTitle = item.evidenceArticleTitles[0] ? `  来源：${item.evidenceArticleTitles[0]}` : "";
+      const reminderAliases = item.aliases.length > 0 ? `  别名：${item.aliases.join(" / ")}` : "";
+      const reminderBreakout = item.breakoutCandidate ? "  黑马信号：是" : "";
+      return [
+        `- ${item.code} | ${item.candidateType} | ${item.displayValue}`,
+        `  建议写入：${reminderBucket} | 置信度：${item.confidence} | 证据篇数：${item.articleCount}`,
+        `  理由：${item.rationale}`,
+        `  证据句：${item.evidenceSnippet}`,
+        reminderEvidenceTitle,
+        reminderAliases,
+        reminderBreakout,
+      ]
+        .filter(Boolean)
+        .join("\n");
     });
     const reminderIntro =
       params.mode === "digest"
@@ -544,39 +576,7 @@ export class WechatDigestService {
         "- 批准 L12",
         "- 忽略 L12",
         "- 稍后 L12",
-        "- 查看候选",
-      ].join("\n"),
-    };
-
-    const lines = params.rows.map((row) => {
-      const item = this.toPendingItem(row);
-      const bucket =
-        item.targetBucket === "labelKeyword" || item.targetBucket === "newLabel"
-          ? `${item.targetBucket}${item.targetLabel ? `:${item.targetLabel}` : ""}`
-          : item.targetBucket;
-      const evidence = item.evidenceArticleTitles[0] ? `；证据：${item.evidenceArticleTitles[0]}` : "";
-      return `- ${item.code} [${item.candidateType}/${item.confidence}] ${item.displayValue} -> ${bucket}；${item.rationale}${evidence}`;
-    });
-
-    const intro =
-      params.mode === "digest"
-        ? `以下是今天值得你审批的学习候选（最多展示 ${params.rows.length} 条）：`
-        : "你今天还有这些学习候选没处理：";
-
-    return {
-      kind: "learning",
-      title:
-        params.mode === "digest"
-          ? `小熊学习候选 ${params.date}`
-          : `小熊学习候选补提醒 ${params.date}`,
-      body: [
-        intro,
-        ...lines,
-        "",
-        "直接回复：",
-        "- 批准 L12",
-        "- 忽略 L12",
-        "- 稍后 L12",
+        "- 撤销 L12",
         "- 查看候选",
       ].join("\n"),
     };
@@ -1303,7 +1303,9 @@ export class WechatDigestService {
     const missingCodes: string[] = [];
     const updatedAt = nowIso();
     let overlayRules =
-      action === "approve" ? readOverlayRules(this.loaded.paths.overlayRulesFile) : undefined;
+      action === "approve" || action === "revoke"
+        ? readOverlayRules(this.loaded.paths.overlayRulesFile)
+        : undefined;
 
     for (const code of requestedCodes) {
       const candidateRow = this.getCandidateRowByCode(code);
@@ -1313,18 +1315,7 @@ export class WechatDigestService {
       }
 
       if (action === "approve") {
-        const approvedCandidate: RuleCandidate = {
-          candidateType: candidateRow.candidate_type,
-          displayValue: candidateRow.display_value,
-          normalizedValue: candidateRow.normalized_value,
-          targetBucket: candidateRow.target_bucket,
-          ...(candidateRow.target_label ? { targetLabel: candidateRow.target_label } : {}),
-          aliases: parseJsonArray(candidateRow.aliases_json),
-          confidence: candidateRow.confidence,
-          rationale: candidateRow.rationale,
-          evidenceSnippet: candidateRow.evidence_snippet,
-          breakoutCandidate: candidateRow.breakout_candidate === 1,
-        };
+        const approvedCandidate = this.rowToRuleCandidate(candidateRow);
         overlayRules = applyCandidateToOverlayRules(overlayRules ?? {}, approvedCandidate);
         this.store.run(
           `
@@ -1338,6 +1329,22 @@ export class WechatDigestService {
           WHERE id = ?
           `,
           [updatedAt, updatedAt, candidateRow.id],
+        );
+      } else if (action === "revoke") {
+        const revokedCandidate = this.rowToRuleCandidate(candidateRow);
+        overlayRules = removeCandidateFromOverlayRules(overlayRules ?? {}, revokedCandidate);
+        this.store.run(
+          `
+          UPDATE rule_candidates
+          SET status = 'rejected',
+              approved_at = NULL,
+              rejected_at = ?,
+              snoozed_until = NULL,
+              suppressed_until = ?,
+              updated_at = ?
+          WHERE id = ?
+          `,
+          [updatedAt, addDaysIso(30), updatedAt, candidateRow.id],
         );
       } else if (action === "reject") {
         this.store.run(
@@ -1372,7 +1379,7 @@ export class WechatDigestService {
       }
     }
 
-    if (action === "approve" && overlayRules) {
+    if ((action === "approve" || action === "revoke") && overlayRules) {
       writeOverlayRules(this.loaded.paths.overlayRulesFile, overlayRules);
       this.reloadConfig();
     }
@@ -1394,6 +1401,10 @@ export class WechatDigestService {
 
   async snoozeLearning(params: ActionParams): Promise<LearningActionOutput> {
     return this.mutateLearningCandidates("snooze", params);
+  }
+
+  async revokeLearning(params: ActionParams): Promise<LearningActionOutput> {
+    return this.mutateLearningCandidates("revoke", params);
   }
 
   async status(params: StatusParams = {}): Promise<StatusOutput> {

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { applyCandidateToOverlayRules, mergeDigestRules } from "../packages/core/src/rules.js";
+import {
+  applyCandidateToOverlayRules,
+  mergeDigestRules,
+  removeCandidateFromOverlayRules,
+} from "../packages/core/src/rules.js";
 import type { DigestRulesConfig, RuleCandidate } from "../packages/core/src/types.js";
 
 describe("rules overlay learning", () => {
@@ -63,5 +67,24 @@ describe("rules overlay learning", () => {
     expect(label).toBeDefined();
     expect(label?.keywords).toContain("Embodied AI");
     expect(label?.keywords).toContain("robotics foundation model");
+  });
+
+  it("removes revoked candidates from the overlay without touching base rules", () => {
+    const candidate: RuleCandidate = {
+      candidateType: "company",
+      displayValue: "BlackForest Labs",
+      normalizedValue: "blackforest labs",
+      targetBucket: "companyWatchlist",
+      aliases: ["BFL"],
+      confidence: "high",
+      rationale: "New breakout model company",
+      evidenceSnippet: "Released a notable model update",
+      breakoutCandidate: true,
+    };
+
+    const overlay = applyCandidateToOverlayRules({}, candidate);
+    const revoked = removeCandidateFromOverlayRules(overlay, candidate);
+
+    expect(revoked.interests?.companyWatchlist).toBeUndefined();
   });
 });

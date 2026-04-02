@@ -25,6 +25,62 @@ function dedupeStrings(values: Array<string | undefined | null>): string[] {
   return output;
 }
 
+function removeMatchingStrings(values: string[] | undefined, removals: string[]): string[] | undefined {
+  if (!values || values.length === 0) {
+    return undefined;
+  }
+  const removalSet = new Set(removals.map((value) => normalizeLearningValue(value)));
+  const remaining = values.filter((value) => !removalSet.has(normalizeLearningValue(value)));
+  return remaining.length > 0 ? remaining : undefined;
+}
+
+function pruneEmptyRules(rules: DigestRulesConfig): DigestRulesConfig {
+  if (rules.interests) {
+    if (!rules.interests.includeKeywords?.length) {
+      delete rules.interests.includeKeywords;
+    }
+    if (!rules.interests.priorityKeywords?.length) {
+      delete rules.interests.priorityKeywords;
+    }
+    if (!rules.interests.companyWatchlist?.length) {
+      delete rules.interests.companyWatchlist;
+    }
+    if (!rules.interests.deprioritizeKeywords?.length) {
+      delete rules.interests.deprioritizeKeywords;
+    }
+    if (!rules.interests.excludeKeywords?.length) {
+      delete rules.interests.excludeKeywords;
+    }
+    if (Object.keys(rules.interests).length === 0) {
+      delete rules.interests;
+    }
+  }
+
+  if (rules.labels) {
+    if (!rules.labels.list?.length) {
+      delete rules.labels.list;
+    }
+    if (rules.labels.content) {
+      rules.labels.content = rules.labels.content.filter((entry) => entry.keywords.length > 0);
+      if (rules.labels.content.length === 0) {
+        delete rules.labels.content;
+      }
+    }
+    if (Object.keys(rules.labels).length === 0) {
+      delete rules.labels;
+    }
+  }
+
+  if (rules.analysis && Object.keys(rules.analysis).length === 0) {
+    delete rules.analysis;
+  }
+  if (rules.deliveryTargets && Object.keys(rules.deliveryTargets).length === 0) {
+    delete rules.deliveryTargets;
+  }
+
+  return rules;
+}
+
 function mergeStringArrays(base?: string[], overlay?: string[]): string[] | undefined {
   const merged = dedupeStrings([...(base ?? []), ...(overlay ?? [])]);
   return merged.length > 0 ? merged : undefined;
@@ -229,7 +285,55 @@ export function applyCandidateToOverlayRules(
     }
   }
 
-  return next;
+  return pruneEmptyRules(next);
+}
+
+export function removeCandidateFromOverlayRules(
+  overlay: DigestRulesConfig,
+  candidate: RuleCandidate,
+): DigestRulesConfig {
+  const next = mergeDigestRules({}, overlay);
+  const values = dedupeStrings([candidate.displayValue, ...(candidate.aliases ?? [])]);
+
+  switch (candidate.targetBucket) {
+    case "companyWatchlist":
+      if (next.interests) {
+        next.interests.companyWatchlist = removeMatchingStrings(next.interests.companyWatchlist, values);
+      }
+      break;
+    case "priorityKeywords":
+      if (next.interests) {
+        next.interests.priorityKeywords = removeMatchingStrings(next.interests.priorityKeywords, values);
+      }
+      break;
+    case "includeKeywords":
+      if (next.interests) {
+        next.interests.includeKeywords = removeMatchingStrings(next.interests.includeKeywords, values);
+      }
+      break;
+    case "labelKeyword":
+    case "newLabel": {
+      const label =
+        candidate.targetLabel?.trim() ||
+        (candidate.targetBucket === "newLabel" ? candidate.displayValue.trim() : undefined);
+      if (!label || !next.labels?.content) {
+        break;
+      }
+      next.labels.content = next.labels.content.flatMap((entry) => {
+        if (entry.label !== label) {
+          return [entry];
+        }
+        const keywords = removeMatchingStrings(entry.keywords, values);
+        if (!keywords) {
+          return [];
+        }
+        return [{ ...entry, keywords }];
+      });
+      break;
+    }
+  }
+
+  return pruneEmptyRules(next);
 }
 
 export function defaultBucketForCandidateType(

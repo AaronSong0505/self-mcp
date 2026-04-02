@@ -226,7 +226,7 @@ export type LearningPendingOutput = {
 };
 
 export type LearningActionOutput = {
-  action: "approve" | "reject" | "snooze";
+  action: "approve" | "reject" | "snooze" | "revoke";
   applied: LearningPendingItem[];
   missingCodes: string[];
 };

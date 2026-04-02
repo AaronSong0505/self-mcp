@@ -11,8 +11,12 @@ function renderPendingItems(result: {
     displayValue: string;
     targetBucket: string;
     targetLabel?: string;
+    aliases: string[];
     confidence: string;
     rationale: string;
+    evidenceSnippet: string;
+    breakoutCandidate: boolean;
+    articleCount: number;
     evidenceArticleTitles: string[];
   }>;
 }): string {
@@ -25,8 +29,20 @@ function renderPendingItems(result: {
       item.targetBucket === "labelKeyword" || item.targetBucket === "newLabel"
         ? `${item.targetBucket}${item.targetLabel ? `:${item.targetLabel}` : ""}`
         : item.targetBucket;
-    const evidence = item.evidenceArticleTitles[0] ? ` | evidence=${item.evidenceArticleTitles[0]}` : "";
-    return `- ${item.code} | ${item.candidateType} | ${item.displayValue} | ${bucket} | ${item.confidence} | ${item.rationale}${evidence}`;
+    const evidenceTitle = item.evidenceArticleTitles[0] ? `Source: ${item.evidenceArticleTitles[0]}` : "";
+    const aliases = item.aliases.length > 0 ? `Aliases: ${item.aliases.join(" / ")}` : "";
+    const breakout = item.breakoutCandidate ? "Breakout: yes" : "";
+    return [
+      `- ${item.code} | ${item.candidateType} | ${item.displayValue}`,
+      `  Target: ${bucket} | Confidence: ${item.confidence} | EvidenceCount: ${item.articleCount}`,
+      `  Why: ${item.rationale}`,
+      `  EvidenceSnippet: ${item.evidenceSnippet}`,
+      evidenceTitle ? `  ${evidenceTitle}` : "",
+      aliases ? `  ${aliases}` : "",
+      breakout ? `  ${breakout}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
   });
 
   return [`Learning candidates (status=${result.status}, count=${result.items.length}):`, ...lines].join("\n");
@@ -215,6 +231,26 @@ async function main() {
           {
             type: "text",
             text: renderMutationResult("Snoozed", result),
+          },
+        ],
+        structuredContent: result,
+      };
+    },
+  );
+
+  server.tool(
+    "wechat_learning.revoke",
+    "Revoke one or more previously approved learning candidates and remove them from the dynamic rules overlay.",
+    {
+      codes: z.array(z.string()).min(1),
+    },
+    async ({ codes }) => {
+      const result = await service.revokeLearning({ codes });
+      return {
+        content: [
+          {
+            type: "text",
+            text: renderMutationResult("Revoked", result),
           },
         ],
         structuredContent: result,

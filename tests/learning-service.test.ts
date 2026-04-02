@@ -71,7 +71,7 @@ afterEach(() => {
 });
 
 describe("learning candidate workflow", () => {
-  it("lists pending candidates, builds followup reminders, and approves into overlay rules", async () => {
+  it("lists pending candidates, builds followup reminders, approves into overlay rules, and can revoke them", async () => {
     const root = createTempRoot();
     writeConfig(root);
     const service = await createService(root);
@@ -183,5 +183,13 @@ describe("learning candidate workflow", () => {
     const overlayText = fs.readFileSync(overlayPath, "utf8");
     expect(overlayText).toContain("BlackForest Labs");
     expect(overlayText).toContain("BFL");
+
+    const revoked = await service.revokeLearning({ codes: ["L12"] });
+    expect(revoked.applied).toHaveLength(1);
+    expect(revoked.applied[0]?.status).toBe("rejected");
+
+    const revokedOverlayText = fs.readFileSync(overlayPath, "utf8");
+    expect(revokedOverlayText).not.toContain("BlackForest Labs");
+    expect(revokedOverlayText).not.toContain("BFL");
   });
 });
