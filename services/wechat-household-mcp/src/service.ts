@@ -34,6 +34,10 @@ type LoadedHouseholdConfig = {
   allowedPairs: Array<{ from: string; to: string }>;
 };
 
+type HouseholdDynamicTargets = {
+  targets?: Record<string, DeliveryTargetConfig>;
+};
+
 export type HouseholdRelayResult = {
   date: string;
   fromPerson: string;
@@ -60,6 +64,17 @@ function readYamlFile<T>(filePath: string, fallback: T): T {
   }
   const raw = fs.readFileSync(filePath, "utf8");
   return (YAML.parse(raw) ?? fallback) as T;
+}
+
+function readJsonFile<T>(filePath: string, fallback: T): T {
+  if (!fs.existsSync(filePath)) {
+    return fallback;
+  }
+  try {
+    return JSON.parse(fs.readFileSync(filePath, "utf8")) as T;
+  } catch {
+    return fallback;
+  }
 }
 
 function normalizeText(value: string): string {
@@ -128,7 +143,11 @@ function matchesPerson(input: string, candidateName: string, aliases: string[]):
 
 function formatRelayBody(fromPerson: string, message: string): string {
   const cleanedMessage = normalizeText(message);
-  return `${fromPerson} 刚刚请我转告你：\n\n${cleanedMessage}\n\n这是我替她原样带到的话。`;
+  return `${fromPerson} 刚刚请我转告你：\n\n${cleanedMessage}\n\n这是我替 ta 原样带到的话。`;
+}
+
+function dynamicTargetsFilePath(): string {
+  return path.join(resolveServicePaths().dataDir, "household_targets.json");
 }
 
 export class WechatHouseholdRelayService {
@@ -164,9 +183,13 @@ export class WechatHouseholdRelayService {
   }
 
   private resolveTarget(targetId: string): DeliveryTargetConfig {
-    const target = this.loaded.rules.deliveryTargets?.[targetId];
+    const target =
+      this.loaded.rules.deliveryTargets?.[targetId] ??
+      readJsonFile<HouseholdDynamicTargets>(dynamicTargetsFilePath(), {}).targets?.[targetId];
     if (!target) {
-      throw new Error(`Unknown delivery target: ${targetId}`);
+      throw new Error(
+        `Household lane "${targetId}" is not activated yet. Scan its QR code, bind it, and let that person send one hello first.`,
+      );
     }
     return target;
   }
@@ -275,6 +298,7 @@ export class WechatHouseholdRelayService {
         sentCount: delivery.sentCount,
       };
     } catch (error) {
+      const errorText = error instanceof Error ? error.message : String(error);
       this.store.run(
         `
         UPDATE household_relays
@@ -282,9 +306,13 @@ export class WechatHouseholdRelayService {
             error = ?
         WHERE id = ?
         `,
-        [String(error), relayId],
+        [errorText, relayId],
       );
-      throw error;
+      throw new Error(
+        errorText.includes("has no active recipient yet")
+          ? `${toPerson.name} 这条家庭 lane 还没有激活收件人。先让 ta 用自己的 bot 发一句“你好”，我就能继续转达了。`
+          : errorText,
+      );
     }
   }
 }

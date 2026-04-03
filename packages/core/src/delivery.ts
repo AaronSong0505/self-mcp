@@ -76,6 +76,18 @@ function readJsonFile<T>(filePath: string): T {
   return JSON.parse(fs.readFileSync(filePath, "utf8")) as T;
 }
 
+function readWechatContextTokenMap(wrapperPath: string, accountId: string): Record<string, string> {
+  const contextTokensPath = resolveWechatContextTokensPath(wrapperPath, accountId);
+  if (!fs.existsSync(contextTokensPath)) {
+    return {};
+  }
+  try {
+    return readJsonFile<Record<string, string>>(contextTokensPath);
+  } catch {
+    return {};
+  }
+}
+
 function normalizeWechatDeliveryConfig(config?: WechatDeliveryConfig): Required<WechatDeliveryConfig> {
   return {
     maxAttempts: Math.max(1, Math.min(5, Math.trunc(config?.maxAttempts ?? DEFAULT_WECHAT_DELIVERY_CONFIG.maxAttempts))),
@@ -123,35 +135,44 @@ function loadWechatPackageConfig(wrapperPath: string): WeixinPackageConfig {
 
 export function resolveDeliveryRecipient(wrapperPath: string, target: DeliveryTargetConfig): string {
   if (target.channel !== "openclaw-weixin" || !target.accountId) {
-    return target.to;
+    if (!target.to?.trim()) {
+      throw new Error("Delivery target is missing 'to'.");
+    }
+    return target.to.trim();
   }
 
-  const configuredRecipient = target.to.trim();
-  const contextTokensPath = resolveWechatContextTokensPath(wrapperPath, target.accountId);
-  if (!fs.existsSync(contextTokensPath)) {
-    return configuredRecipient;
+  const configuredRecipient = target.to?.trim() ?? "";
+  const parsed = readWechatContextTokenMap(wrapperPath, target.accountId);
+  if (!configuredRecipient) {
+    const activeRecipients = Object.keys(parsed);
+    if (activeRecipients.length === 1) {
+      return activeRecipients[0]!;
+    }
+    if (activeRecipients.length === 0) {
+      throw new Error(
+        `WeChat account ${target.accountId} has no active recipient yet. Ask the lane owner to send one message first.`,
+      );
+    }
+    throw new Error(
+      `WeChat account ${target.accountId} has ${activeRecipients.length} active recipients. Configure an explicit 'to' to disambiguate.`,
+    );
   }
 
-  try {
-    const raw = fs.readFileSync(contextTokensPath, "utf8");
-    const parsed = JSON.parse(raw) as Record<string, string>;
-    if (parsed[configuredRecipient]) {
-      return configuredRecipient;
-    }
-    const normalizedTarget = configuredRecipient.toLowerCase();
-    const matched = Object.keys(parsed).find((key) => key.toLowerCase() === normalizedTarget);
-    if (matched) {
-      // The plugin persists context-token keys in lowercase, but active Weixin delivery
-      // can still require the exact mixed-case recipient that the user configured.
-      if (matched !== matched.toLowerCase()) {
-        return matched;
-      }
-      return configuredRecipient;
-    }
-    return configuredRecipient;
-  } catch {
+  if (Object.keys(parsed).length === 0) {
     return configuredRecipient;
   }
+  if (parsed[configuredRecipient]) {
+    return configuredRecipient;
+  }
+  const normalizedTarget = configuredRecipient.toLowerCase();
+  const matched = Object.keys(parsed).find((key) => key.toLowerCase() === normalizedTarget);
+  if (matched) {
+    if (matched !== matched.toLowerCase()) {
+      return matched;
+    }
+    return configuredRecipient;
+  }
+  return configuredRecipient;
 }
 
 function resolveWechatContextToken(
@@ -167,7 +188,7 @@ function resolveWechatContextToken(
   if (!fs.existsSync(contextTokensPath)) {
     throw new Error(`Weixin context token file not found: ${contextTokensPath}`);
   }
-  const parsed = readJsonFile<Record<string, string>>(contextTokensPath);
+  const parsed = readWechatContextTokenMap(wrapperPath, target.accountId);
   const exactMatch = parsed[recipient];
   if (exactMatch?.trim()) {
     return exactMatch.trim();

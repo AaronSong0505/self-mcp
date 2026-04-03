@@ -32,7 +32,7 @@ export type SourceConfig = {
 
 export type DeliveryTargetConfig = {
   channel: string;
-  to: string;
+  to?: string;
   accountId?: string;
 };
 

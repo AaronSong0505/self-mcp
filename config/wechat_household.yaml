@@ -8,16 +8,74 @@ people:
     aliases:
       - Aaron
       - 老公
-      - 亚纶
+      - 亚伦
   Faye:
     targetId: faye-wechat
     aliases:
       - Faye
       - 老婆
       - 菲菲
+  Dad:
+    targetId: dad-wechat
+    aliases:
+      - Dad
+      - 爸爸
+      - 爸
+      - 老爸
+  Mom:
+    targetId: mom-wechat
+    aliases:
+      - Mom
+      - 妈妈
+      - 妈
+      - 老妈
+  Sister:
+    targetId: sister-wechat
+    aliases:
+      - Sister
+      - 姐姐
+      - 妹妹
+      - 老姐
+      - 老妹
 
 allowedPairs:
-  - from: Faye
-    to: Aaron
   - from: Aaron
     to: Faye
+  - from: Aaron
+    to: Dad
+  - from: Aaron
+    to: Mom
+  - from: Aaron
+    to: Sister
+  - from: Faye
+    to: Aaron
+  - from: Faye
+    to: Dad
+  - from: Faye
+    to: Mom
+  - from: Faye
+    to: Sister
+  - from: Dad
+    to: Aaron
+  - from: Dad
+    to: Faye
+  - from: Dad
+    to: Mom
+  - from: Dad
+    to: Sister
+  - from: Mom
+    to: Aaron
+  - from: Mom
+    to: Faye
+  - from: Mom
+    to: Dad
+  - from: Mom
+    to: Sister
+  - from: Sister
+    to: Aaron
+  - from: Sister
+    to: Faye
+  - from: Sister
+    to: Dad
+  - from: Sister
+    to: Mom

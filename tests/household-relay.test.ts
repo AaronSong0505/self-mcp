@@ -76,7 +76,7 @@ function createTempRoots() {
   fs.writeFileSync(
     path.join(configDir, "wechat_household.yaml"),
     `enabled: true
-title: 小熊帮忙转一句 🐻
+title: household relay
 people:
   Aaron:
     targetId: aaron-wechat
@@ -123,7 +123,7 @@ describe("wechat household relay service", () => {
         msg: { to_user_id: string; item_list: Array<{ text_item?: { text?: string } }> };
       };
       expect(parsed.msg.to_user_id).toBe("o9cq80whDkdcEfZaa0FJfapVjpc4@im.wechat");
-      expect(parsed.msg.item_list[0]?.text_item?.text).toContain("Faye 刚刚请我转告你");
+      expect(parsed.msg.item_list[0]?.text_item?.text).toContain("Faye");
       expect(parsed.msg.item_list[0]?.text_item?.text).toContain("今晚早点回家");
       return new Response('{"ret":0}', { status: 200 });
     });
@@ -159,7 +159,82 @@ describe("wechat household relay service", () => {
     });
 
     expect(result.status).toBe("dry_run");
-    expect(result.forwardedText).toContain("Aaron 刚刚请我转告你");
+    expect(result.forwardedText).toContain("Aaron");
     expect(result.sentCount).toBe(0);
+  });
+
+  it("uses dynamic household targets for dedicated family lanes that only know the bot account id", async () => {
+    const { root, configDir, dataDir, openclawRoot } = createTempRoots();
+    process.env.WECHAT_DIGEST_ROOT = root;
+    process.env.WECHAT_DIGEST_CONFIG_DIR = configDir;
+    process.env.WECHAT_DIGEST_DATA_DIR = dataDir;
+    process.env.OPENCLAW_CLI_WRAPPER = path.join(openclawRoot, "scripts", "openclaw.ps1");
+
+    const accountsDir = path.join(openclawRoot, ".openclaw-state", "openclaw-weixin", "accounts");
+    fs.writeFileSync(
+      path.join(accountsDir, "dad-account.json"),
+      JSON.stringify({
+        token: "dad-token",
+        baseUrl: "https://ilinkai.weixin.qq.com",
+      }),
+      "utf8",
+    );
+    fs.writeFileSync(
+      path.join(accountsDir, "dad-account.context-tokens.json"),
+      JSON.stringify({
+        "dad-peer@im.wechat": "dad-context-token",
+      }),
+      "utf8",
+    );
+    fs.writeFileSync(
+      path.join(configDir, "wechat_household.yaml"),
+      `enabled: true
+title: household relay
+people:
+  Aaron:
+    targetId: aaron-wechat
+    aliases: [Aaron]
+  Dad:
+    targetId: dad-wechat
+    aliases: [Dad, 爸爸]
+allowedPairs:
+  - from: Aaron
+    to: Dad
+`,
+      "utf8",
+    );
+    fs.writeFileSync(
+      path.join(dataDir, "household_targets.json"),
+      JSON.stringify({
+        targets: {
+          "dad-wechat": {
+            channel: "openclaw-weixin",
+            accountId: "dad-account",
+          },
+        },
+      }),
+      "utf8",
+    );
+
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const parsed = JSON.parse(String(init?.body ?? "")) as {
+        msg: { to_user_id: string; context_token: string };
+      };
+      expect(parsed.msg.to_user_id).toBe("dad-peer@im.wechat");
+      expect(parsed.msg.context_token).toBe("dad-context-token");
+      return new Response('{"ret":0}', { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const service = await WechatHouseholdRelayService.create();
+    const result = await service.sendRelay({
+      fromPerson: "Aaron",
+      toPerson: "Dad",
+      message: "晚点记得看微信。",
+    });
+
+    expect(result.status).toBe("sent");
+    expect(result.recipient).toBe("dad-peer@im.wechat");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

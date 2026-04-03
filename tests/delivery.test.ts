@@ -110,6 +110,38 @@ describe("delivery recipient resolution", () => {
     expect(recipient).toBe("o9cq80whDkdcEfZaa0FJfapVjpc4@im.wechat");
   });
 
+  it("infers the sole active recipient when a dedicated WeChat lane omits 'to'", () => {
+    const openclawRoot = createTempOpenClawRoot();
+    const wrapperPath = path.join(openclawRoot, "scripts", "openclaw.ps1");
+    seedWechatRuntime(openclawRoot);
+
+    const recipient = resolveDeliveryRecipient(wrapperPath, {
+      channel: "openclaw-weixin",
+      accountId: "sample-account",
+    });
+
+    expect(recipient).toBe("o9cq80whDkdcEfZaa0FJfapVjpc4@im.wechat");
+  });
+
+  it("throws when a dedicated WeChat lane omits 'to' before the owner sends the first message", () => {
+    const openclawRoot = createTempOpenClawRoot();
+    const wrapperPath = path.join(openclawRoot, "scripts", "openclaw.ps1");
+    const accountsDir = path.join(openclawRoot, ".openclaw-state", "openclaw-weixin", "accounts");
+    fs.mkdirSync(accountsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(accountsDir, "sample-account.context-tokens.json"),
+      JSON.stringify({}),
+      "utf8",
+    );
+
+    expect(() =>
+      resolveDeliveryRecipient(wrapperPath, {
+        channel: "openclaw-weixin",
+        accountId: "sample-account",
+      }),
+    ).toThrow(/no active recipient yet/i);
+  });
+
   it("sends openclaw-weixin digest messages directly with UTF-8 headers and the stored context token", async () => {
     const openclawRoot = createTempOpenClawRoot();
     const wrapperPath = path.join(openclawRoot, "scripts", "openclaw.ps1");

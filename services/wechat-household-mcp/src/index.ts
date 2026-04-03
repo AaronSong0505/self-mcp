@@ -12,7 +12,7 @@ async function main() {
 
   server.tool(
     "wechat_household.send_relay",
-    "Forward one spouse's explicit message to the other spouse through the active household WeChat lane.",
+    "Forward one family member's explicit message to another whitelisted family member through the active household WeChat lane.",
     {
       fromPerson: z.string().min(1),
       toPerson: z.string().min(1),
