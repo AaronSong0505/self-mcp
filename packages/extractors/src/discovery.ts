@@ -9,8 +9,13 @@ const DEFAULT_HEADERS = {
   "accept-language": "zh-CN,zh;q=0.9,en;q=0.8",
 };
 
+const DEFAULT_FETCH_TIMEOUT_MS = 15_000;
+
 export async function fetchText(url: string): Promise<string> {
-  const response = await fetch(url, { headers: DEFAULT_HEADERS });
+  const response = await fetch(url, {
+    headers: DEFAULT_HEADERS,
+    signal: AbortSignal.timeout(DEFAULT_FETCH_TIMEOUT_MS),
+  });
   if (!response.ok) {
     throw new Error(`Failed to fetch ${url}: ${response.status}`);
   }
@@ -78,7 +83,8 @@ export function parseRssCandidates(xml: string, source: SourceConfig): Omit<Arti
         discoveredDate,
       };
     })
-    .filter(Boolean) as Omit<ArticleCandidate, "articleId" | "status">[];
+    .filter(Boolean)
+    .slice(0, source.discovery.maxItems ?? Number.MAX_SAFE_INTEGER) as Omit<ArticleCandidate, "articleId" | "status">[];
 }
 
 export function parseHtmlListCandidates(
@@ -120,7 +126,8 @@ export function parseHtmlListCandidates(
         discoveredDate,
       };
     })
-    .filter(Boolean) as Omit<ArticleCandidate, "articleId" | "status">[];
+    .filter(Boolean)
+    .slice(0, source.discovery.maxItems ?? Number.MAX_SAFE_INTEGER) as Omit<ArticleCandidate, "articleId" | "status">[];
 }
 
 function getByPath(input: unknown, path: string): unknown {
@@ -179,7 +186,8 @@ export function parseJsonListCandidates(
         discoveredDate,
       };
     })
-    .filter(Boolean) as Omit<ArticleCandidate, "articleId" | "status">[];
+    .filter(Boolean)
+    .slice(0, source.discovery.maxItems ?? Number.MAX_SAFE_INTEGER) as Omit<ArticleCandidate, "articleId" | "status">[];
 }
 
 export async function scanSource(source: SourceConfig): Promise<Omit<ArticleCandidate, "articleId" | "status">[]> {

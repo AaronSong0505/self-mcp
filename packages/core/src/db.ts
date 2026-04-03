@@ -109,6 +109,19 @@ export class SqliteStateStore {
         error TEXT
       );
 
+      CREATE TABLE IF NOT EXISTS love_note_deliveries (
+        id TEXT PRIMARY KEY,
+        note_date TEXT NOT NULL,
+        target_id TEXT NOT NULL,
+        scheduled_for TEXT NOT NULL,
+        status TEXT NOT NULL,
+        content TEXT,
+        to_recipient TEXT,
+        created_at TEXT NOT NULL,
+        sent_at TEXT,
+        error TEXT
+      );
+
       CREATE TABLE IF NOT EXISTS rule_candidates (
         id TEXT PRIMARY KEY,
         short_code TEXT NOT NULL UNIQUE,
@@ -150,6 +163,7 @@ export class SqliteStateStore {
       CREATE INDEX IF NOT EXISTS idx_articles_discovered_date ON articles(discovered_date);
       CREATE INDEX IF NOT EXISTS idx_articles_analysis_status ON articles(analysis_status);
       CREATE INDEX IF NOT EXISTS idx_deliveries_target ON deliveries(target_id, status);
+      CREATE INDEX IF NOT EXISTS idx_love_note_target_date ON love_note_deliveries(target_id, note_date, status);
       CREATE INDEX IF NOT EXISTS idx_rule_candidates_status ON rule_candidates(status, last_seen_at);
       CREATE UNIQUE INDEX IF NOT EXISTS idx_rule_candidates_key
         ON rule_candidates(candidate_type, normalized_value, target_bucket, COALESCE(target_label, ''));

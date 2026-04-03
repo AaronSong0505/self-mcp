@@ -9,6 +9,8 @@ const DEFAULT_HEADERS = {
   "accept-language": "zh-CN,zh;q=0.9,en;q=0.8",
 };
 
+const DEFAULT_HTTP_TIMEOUT_MS = 20_000;
+
 function uniqueImages(images: ExtractedImage[]): ExtractedImage[] {
   const seen = new Set<string>();
   return images.filter((image) => {
@@ -259,6 +261,7 @@ export async function extractArticle(
           "x-requested-with": "XMLHttpRequest",
           referer: url,
         },
+        signal: AbortSignal.timeout(DEFAULT_HTTP_TIMEOUT_MS),
       });
       if (!response.ok) {
         throw new Error(`Failed to fetch article API ${apiUrl}: ${response.status}`);
@@ -275,7 +278,10 @@ export async function extractArticle(
     }
   }
 
-  const response = await fetch(url, { headers: DEFAULT_HEADERS });
+  const response = await fetch(url, {
+    headers: DEFAULT_HEADERS,
+    signal: AbortSignal.timeout(DEFAULT_HTTP_TIMEOUT_MS),
+  });
   if (!response.ok) {
     throw new Error(`Failed to fetch article ${url}: ${response.status}`);
   }

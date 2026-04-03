@@ -2,7 +2,14 @@ import fs from "node:fs";
 import { spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import path from "node:path";
-import type { DeliveryTargetConfig, DigestMessage } from "./types.js";
+import type { DeliveryTargetConfig, DigestMessage, WechatDeliveryConfig } from "./types.js";
+
+const DEFAULT_WECHAT_DELIVERY_CONFIG: Required<WechatDeliveryConfig> = {
+  maxAttempts: 3,
+  retryDelayMs: 1200,
+  interMessageDelayMs: 350,
+  overviewDetailDelayMs: 1500,
+};
 
 function resolveWrapperWorkdir(wrapperPath: string): string {
   return path.dirname(path.dirname(wrapperPath));
@@ -69,6 +76,25 @@ function readJsonFile<T>(filePath: string): T {
   return JSON.parse(fs.readFileSync(filePath, "utf8")) as T;
 }
 
+function normalizeWechatDeliveryConfig(config?: WechatDeliveryConfig): Required<WechatDeliveryConfig> {
+  return {
+    maxAttempts: Math.max(1, Math.min(5, Math.trunc(config?.maxAttempts ?? DEFAULT_WECHAT_DELIVERY_CONFIG.maxAttempts))),
+    retryDelayMs: Math.max(0, Math.trunc(config?.retryDelayMs ?? DEFAULT_WECHAT_DELIVERY_CONFIG.retryDelayMs)),
+    interMessageDelayMs: Math.max(
+      0,
+      Math.trunc(config?.interMessageDelayMs ?? DEFAULT_WECHAT_DELIVERY_CONFIG.interMessageDelayMs),
+    ),
+    overviewDetailDelayMs: Math.max(
+      0,
+      Math.trunc(config?.overviewDetailDelayMs ?? DEFAULT_WECHAT_DELIVERY_CONFIG.overviewDetailDelayMs),
+    ),
+  };
+}
+
+function sleep(ms: number): Promise<void> {
+  return ms > 0 ? new Promise((resolve) => setTimeout(resolve, ms)) : Promise.resolve();
+}
+
 function loadWechatAccountConfig(wrapperPath: string, accountId: string): WeixinAccountConfig {
   const accountPath = resolveWechatAccountPath(wrapperPath, accountId);
   if (!fs.existsSync(accountPath)) {
@@ -100,22 +126,31 @@ export function resolveDeliveryRecipient(wrapperPath: string, target: DeliveryTa
     return target.to;
   }
 
+  const configuredRecipient = target.to.trim();
   const contextTokensPath = resolveWechatContextTokensPath(wrapperPath, target.accountId);
   if (!fs.existsSync(contextTokensPath)) {
-    return target.to;
+    return configuredRecipient;
   }
 
   try {
     const raw = fs.readFileSync(contextTokensPath, "utf8");
     const parsed = JSON.parse(raw) as Record<string, string>;
-    if (parsed[target.to]) {
-      return target.to;
+    if (parsed[configuredRecipient]) {
+      return configuredRecipient;
     }
-    const normalizedTarget = target.to.toLowerCase();
+    const normalizedTarget = configuredRecipient.toLowerCase();
     const matched = Object.keys(parsed).find((key) => key.toLowerCase() === normalizedTarget);
-    return matched ?? target.to;
+    if (matched) {
+      // The plugin persists context-token keys in lowercase, but active Weixin delivery
+      // can still require the exact mixed-case recipient that the user configured.
+      if (matched !== matched.toLowerCase()) {
+        return matched;
+      }
+      return configuredRecipient;
+    }
+    return configuredRecipient;
   } catch {
-    return target.to;
+    return configuredRecipient;
   }
 }
 
@@ -146,7 +181,7 @@ function resolveWechatContextToken(
   return matchedValue.trim();
 }
 
-function buildWechatTextBody(recipient: string, text: string, contextToken: string): string {
+function buildWechatTextBody(recipient: string, text: string, contextToken: string, channelVersion: string): string {
   return JSON.stringify({
     msg: {
       from_user_id: "",
@@ -158,64 +193,106 @@ function buildWechatTextBody(recipient: string, text: string, contextToken: stri
       context_token: contextToken,
     },
     base_info: {
-      channel_version: "2.1.1",
+      channel_version: channelVersion,
     },
   });
+}
+
+function formatDigestMessage(message: DigestMessage): string {
+  return `${message.title}\n\n${message.body}`.trim();
+}
+
+function delayBeforeMessage(index: number, messages: DigestMessage[], config: Required<WechatDeliveryConfig>): number {
+  if (index <= 0) {
+    return 0;
+  }
+  const previous = messages[index - 1];
+  const current = messages[index];
+  if (index === 1 && previous?.kind === "overview" && current?.kind !== "overview") {
+    return config.overviewDetailDelayMs;
+  }
+  return config.interMessageDelayMs;
+}
+
+async function postWechatText(params: {
+  account: WeixinAccountConfig;
+  headersBase: Record<string, string>;
+  recipient: string;
+  text: string;
+  contextToken: string;
+  channelVersion: string;
+  config: Required<WechatDeliveryConfig>;
+}): Promise<void> {
+  const { account, headersBase, recipient, text, contextToken, channelVersion, config } = params;
+  let lastError: Error | undefined;
+
+  for (let attempt = 1; attempt <= config.maxAttempts; attempt += 1) {
+    try {
+      const body = buildWechatTextBody(recipient, text, contextToken, channelVersion);
+      const response = await fetch(new URL("ilink/bot/sendmessage", ensureTrailingSlash(account.baseUrl)), {
+        method: "POST",
+        headers: {
+          ...headersBase,
+          "Content-Length": String(Buffer.byteLength(body, "utf8")),
+          "X-WECHAT-UIN": randomWechatUin(),
+        },
+        body,
+      });
+      const rawText = await response.text();
+      if (!response.ok) {
+        throw new Error(`Direct Weixin send failed (${response.status}): ${rawText}`);
+      }
+      return;
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+      if (attempt < config.maxAttempts) {
+        await sleep(config.retryDelayMs * attempt);
+      }
+    }
+  }
+
+  throw lastError ?? new Error("Direct Weixin send failed.");
 }
 
 async function sendWechatDigestMessagesDirect(params: {
   wrapperPath: string;
   target: DeliveryTargetConfig;
   messages: DigestMessage[];
+  config?: WechatDeliveryConfig;
 }): Promise<{ sentCount: number; recipient: string }> {
   const { wrapperPath, target, messages } = params;
   if (!target.accountId) {
     throw new Error("openclaw-weixin delivery requires accountId.");
   }
 
+  const config = normalizeWechatDeliveryConfig(params.config);
   const recipient = resolveDeliveryRecipient(wrapperPath, target);
   const contextToken = resolveWechatContextToken(wrapperPath, target, recipient);
   const account = loadWechatAccountConfig(wrapperPath, target.accountId);
   const pkg = loadWechatPackageConfig(wrapperPath);
-  const bodyBaseInfo = {
-    channel_version: pkg.version?.trim() || "2.1.1",
-  };
+  const channelVersion = pkg.version?.trim() || "2.1.1";
   const headersBase: Record<string, string> = {
-    "Content-Type": "application/json",
+    "Content-Type": "application/json; charset=utf-8",
+    Accept: "application/json",
     AuthorizationType: "ilink_bot_token",
     Authorization: `Bearer ${account.token}`,
     "iLink-App-Id": pkg.ilink_appid?.trim() || "bot",
-    "iLink-App-ClientVersion": String(buildClientVersion(pkg.version?.trim() || "2.1.1")),
+    "iLink-App-ClientVersion": String(buildClientVersion(channelVersion)),
   };
 
   let sentCount = 0;
-  for (const message of messages) {
-    const text = `${message.title}\n\n${message.body}`.trim();
-    const body = JSON.stringify({
-      msg: {
-        from_user_id: "",
-        to_user_id: recipient,
-        client_id: `self-mcp-${Date.now()}-${crypto.randomUUID()}`,
-        message_type: 2,
-        message_state: 2,
-        item_list: [{ type: 1, text_item: { text } }],
-        context_token: contextToken,
-      },
-      base_info: bodyBaseInfo,
+  for (const [index, message] of messages.entries()) {
+    await sleep(delayBeforeMessage(index, messages, config));
+    const text = formatDigestMessage(message);
+    await postWechatText({
+      account,
+      headersBase,
+      recipient,
+      text,
+      contextToken,
+      channelVersion,
+      config,
     });
-    const response = await fetch(new URL("ilink/bot/sendmessage", ensureTrailingSlash(account.baseUrl)), {
-      method: "POST",
-      headers: {
-        ...headersBase,
-        "Content-Length": String(Buffer.byteLength(body, "utf8")),
-        "X-WECHAT-UIN": randomWechatUin(),
-      },
-      body,
-    });
-    const rawText = await response.text();
-    if (!response.ok) {
-      throw new Error(`Direct Weixin send failed (${response.status}): ${rawText}`);
-    }
     sentCount += 1;
   }
 
@@ -226,6 +303,7 @@ export async function sendDigestMessages(params: {
   wrapperPath: string;
   target: DeliveryTargetConfig;
   messages: DigestMessage[];
+  wechatConfig?: WechatDeliveryConfig;
 }): Promise<{ sentCount: number; recipient: string }> {
   const { wrapperPath, target, messages } = params;
   if (!wrapperPath) {
@@ -241,12 +319,13 @@ export async function sendDigestMessages(params: {
         to: recipient,
       },
       messages,
+      config: params.wechatConfig,
     });
   }
 
   let sentCount = 0;
   for (const message of messages) {
-    const text = `${message.title}\n\n${message.body}`.trim();
+    const text = formatDigestMessage(message);
     const args = [
       "-NoProfile",
       "-ExecutionPolicy",

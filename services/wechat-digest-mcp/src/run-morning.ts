@@ -1,5 +1,6 @@
 import { WechatDigestService } from "./service.js";
 import { toDateKey } from "../../../packages/core/src/canonical.js";
+import { loadServiceConfig } from "../../../packages/core/src/config.js";
 
 type CliArgs = {
   date?: string;
@@ -39,9 +40,11 @@ function parseArgs(argv: string[]): CliArgs {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const service = await WechatDigestService.create();
+  const loaded = loadServiceConfig();
+  const maxAnalyzePerRun = Math.max(1, loaded.rules.analysis?.maxAnalyzePerRun ?? 6);
   const scan = await service.scan();
   const newIds = scan.articles.filter((article) => article.status === "new").map((article) => article.articleId);
-  const analyzed = newIds.length > 0 ? await service.analyze({ articleIds: newIds }) : [];
+  const analyzed = await service.analyze({ limit: maxAnalyzePerRun });
   const digest = await service.buildDigest({
     date: args.date ?? toDateKey(new Date()),
     targetId: args.targetId,
@@ -55,6 +58,7 @@ async function main() {
     scannedSources: scan.sourceCount,
     discoveredArticles: scan.articles.length,
     newArticles: newIds.length,
+    analyzedRequested: maxAnalyzePerRun,
     analyzedArticles: analyzed.length,
     candidateCount: digest.candidateCount,
     learningCandidateCount: digest.learningCandidateCount,

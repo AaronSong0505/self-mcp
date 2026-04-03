@@ -74,6 +74,12 @@ function pruneEmptyRules(rules: DigestRulesConfig): DigestRulesConfig {
   if (rules.analysis && Object.keys(rules.analysis).length === 0) {
     delete rules.analysis;
   }
+  if (rules.delivery?.wechat && Object.keys(rules.delivery.wechat).length === 0) {
+    delete rules.delivery.wechat;
+  }
+  if (rules.delivery && Object.keys(rules.delivery).length === 0) {
+    delete rules.delivery;
+  }
   if (rules.deliveryTargets && Object.keys(rules.deliveryTargets).length === 0) {
     delete rules.deliveryTargets;
   }
@@ -117,6 +123,14 @@ export function mergeDigestRules(
     analysis: {
       ...base.analysis,
       ...overlay.analysis,
+    },
+    delivery: {
+      ...base.delivery,
+      ...overlay.delivery,
+      wechat: {
+        ...base.delivery?.wechat,
+        ...overlay.delivery?.wechat,
+      },
     },
     interests: {
       ...base.interests,

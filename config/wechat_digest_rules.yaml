@@ -4,6 +4,15 @@ analysis:
   visionModel: qwen3.5-plus
   maxImages: 2
   summaryMaxChars: 220
+  requestTimeoutMs: 45000
+  maxAnalyzePerRun: 6
+
+delivery:
+  wechat:
+    maxAttempts: 3
+    retryDelayMs: 1200
+    interMessageDelayMs: 350
+    overviewDetailDelayMs: 1500
 
 interests:
   objective: >
@@ -155,3 +164,7 @@ deliveryTargets:
     channel: openclaw-weixin
     accountId: 485b29e565ea-im-bot
     to: o9cq80whDkdcEfZaa0FJfapVjpc4@im.wechat
+  faye-wechat:
+    channel: openclaw-weixin
+    accountId: a267049adcee-im-bot
+    to: o9cq80_VK5NBw2O-cmGI-AcSxxI4@im.wechat

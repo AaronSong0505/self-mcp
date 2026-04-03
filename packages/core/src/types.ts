@@ -24,6 +24,7 @@ export type SourceConfig = {
   discovery: {
     type: DiscoveryType;
     url: string;
+    maxItems?: number;
     selectors?: HtmlListSelectors;
     json?: JsonListSelectors;
   };
@@ -33,6 +34,13 @@ export type DeliveryTargetConfig = {
   channel: string;
   to: string;
   accountId?: string;
+};
+
+export type WechatDeliveryConfig = {
+  maxAttempts?: number;
+  retryDelayMs?: number;
+  interMessageDelayMs?: number;
+  overviewDetailDelayMs?: number;
 };
 
 export type LearningCandidateType = "company" | "technology" | "theme";
@@ -62,6 +70,11 @@ export type DigestRulesConfig = {
     visionModel?: string;
     maxImages?: number;
     summaryMaxChars?: number;
+    requestTimeoutMs?: number;
+    maxAnalyzePerRun?: number;
+  };
+  delivery?: {
+    wechat?: WechatDeliveryConfig;
   };
   interests?: {
     objective?: string;

@@ -63,6 +63,8 @@ const runtime: AnalyzerRuntime = {
   visionModel: "test-vision",
   maxImages: 2,
   summaryMaxChars: 220,
+  requestTimeoutMs: 45000,
+  maxAnalyzePerRun: 6,
 };
 
 describe("article analysis preferences", () => {

@@ -38,4 +38,34 @@ describe("parseJsonListCandidates", () => {
     expect(candidate?.blurb).toContain("Anthropic");
     expect(candidate?.publishedAt).toBeTruthy();
   });
+
+  it("respects maxItems when a source only wants the first batch of discovered articles", () => {
+    const source: SourceConfig = {
+      id: "jiqizhixin",
+      displayName: "机器之心",
+      discovery: {
+        type: "json_list",
+        url: "https://www.jiqizhixin.com/api/article_library/articles.json?page=1&per=20",
+        maxItems: 2,
+        json: {
+          listPath: "articles",
+          titleField: "title",
+          linkField: "slug",
+          linkTemplate: "https://www.jiqizhixin.com/articles/{value}",
+        },
+      },
+    };
+
+    const raw = JSON.stringify({
+      articles: [
+        { title: "A", slug: "a" },
+        { title: "B", slug: "b" },
+        { title: "C", slug: "c" },
+      ],
+    });
+
+    const candidates = parseJsonListCandidates(raw, source);
+    expect(candidates).toHaveLength(2);
+    expect(candidates.map((entry) => entry.title)).toEqual(["A", "B"]);
+  });
 });

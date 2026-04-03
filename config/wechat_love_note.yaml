@@ -1,0 +1,12 @@
+enabled: true
+targetId: faye-wechat
+model: qwen3.5-plus
+randomWindow:
+  start: "10:00"
+  end: "21:00"
+style:
+  senderName: Xiaoxiong
+  ownerName: Aaron
+  recipientName: Faye
+  maxChars: 140
+  tone: warm, natural, concise, and grounded in ordinary daily life

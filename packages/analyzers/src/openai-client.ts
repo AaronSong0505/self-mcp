@@ -8,6 +8,8 @@ export type AnalyzerRuntime = {
   visionModel: string;
   maxImages: number;
   summaryMaxChars: number;
+  requestTimeoutMs: number;
+  maxAnalyzePerRun: number;
 };
 
 export function resolveAnalyzerRuntime(rules: DigestRulesConfig): AnalyzerRuntime {
@@ -21,6 +23,8 @@ export function resolveAnalyzerRuntime(rules: DigestRulesConfig): AnalyzerRuntim
     visionModel: process.env.WECHAT_DIGEST_VISION_MODEL || rules.analysis?.visionModel || "qwen3.5-plus",
     maxImages: Math.max(0, rules.analysis?.maxImages ?? 2),
     summaryMaxChars: Math.max(120, rules.analysis?.summaryMaxChars ?? 220),
+    requestTimeoutMs: Math.max(10_000, rules.analysis?.requestTimeoutMs ?? 45_000),
+    maxAnalyzePerRun: Math.max(1, rules.analysis?.maxAnalyzePerRun ?? 6),
   };
 }
 
@@ -35,6 +39,8 @@ function createClient(runtime: AnalyzerRuntime): OpenAI {
   return new OpenAI({
     apiKey: runtime.apiKey,
     baseURL: runtime.baseUrl,
+    timeout: runtime.requestTimeoutMs,
+    maxRetries: 1,
   });
 }
 

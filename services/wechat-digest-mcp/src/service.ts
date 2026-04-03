@@ -40,6 +40,7 @@ type ScanParams = {
 type AnalyzeParams = {
   articleIds?: string[];
   urls?: string[];
+  limit?: number;
 };
 
 type BuildParams = {
@@ -474,7 +475,7 @@ export class WechatDigestService {
     };
   }
 
-  private getArticlesForAnalysis(articleIds?: string[]): DbArticleRow[] {
+  private getArticlesForAnalysis(articleIds?: string[], limit?: number): DbArticleRow[] {
     if (articleIds && articleIds.length > 0) {
       const placeholders = articleIds.map(() => "?").join(", ");
       return this.store.all<DbArticleRow>(
@@ -483,7 +484,8 @@ export class WechatDigestService {
       );
     }
     return this.store.all<DbArticleRow>(
-      "SELECT * FROM articles WHERE analysis_status != 'done' ORDER BY updated_at DESC LIMIT 50",
+      "SELECT * FROM articles WHERE analysis_status != 'done' ORDER BY updated_at DESC LIMIT ?",
+      [Math.max(1, limit ?? 50)],
     );
   }
 
@@ -788,94 +790,106 @@ export class WechatDigestService {
       ids.push(this.ensureAdhocUrl(url));
     }
 
-    const rows = this.getArticlesForAnalysis(ids.length > 0 ? ids : undefined);
+    const rows = this.getArticlesForAnalysis(ids.length > 0 ? ids : undefined, params.limit);
     const outputs: AnalyzeOutput[] = [];
 
     for (const row of rows) {
-      const extracted: ExtractedArticle = await extractArticle(row.article_url, { browserFallback: true });
-      const analysis = await analyzeArticle({
-        article: extracted,
-        rules: this.loaded.rules,
-      });
-      const analyzedAt = nowIso();
+      try {
+        const extracted: ExtractedArticle = await extractArticle(row.article_url, { browserFallback: true });
+        const analysis = await analyzeArticle({
+          article: extracted,
+          rules: this.loaded.rules,
+        });
+        const analyzedAt = nowIso();
 
-      this.store.run("DELETE FROM article_images WHERE article_id = ?", [row.id]);
-      extracted.images.slice(0, 5).forEach((image, index) => {
-        const insight = analysis.heroImages.find((entry) => entry.url === image.url)?.insight;
+        this.store.run("DELETE FROM article_images WHERE article_id = ?", [row.id]);
+        extracted.images.slice(0, 5).forEach((image, index) => {
+          const insight = analysis.heroImages.find((entry) => entry.url === image.url)?.insight;
+          this.store.run(
+            `
+            INSERT INTO article_images (id, article_id, image_url, ordinal, vision_insight, width, height)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            `,
+            [crypto.randomUUID(), row.id, image.url, index, insight ?? null, image.width ?? null, image.height ?? null],
+          );
+        });
+
         this.store.run(
           `
-          INSERT INTO article_images (id, article_id, image_url, ordinal, vision_insight, width, height)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
+          UPDATE articles SET
+            title = ?,
+            blurb = COALESCE(?, blurb),
+            author = ?,
+            published_at = COALESCE(?, published_at),
+            content_text = ?,
+            content_html = ?,
+            summary = ?,
+            why_relevant = ?,
+            key_takeaways_json = ?,
+            content_labels_json = ?,
+            list_label = ?,
+            relevance_score = ?,
+            digest_eligible = ?,
+            analysis_status = 'done',
+            analyzed_at = ?,
+            updated_at = ?
+          WHERE id = ?
           `,
-          [crypto.randomUUID(), row.id, image.url, index, insight ?? null, image.width ?? null, image.height ?? null],
+          [
+            extracted.title,
+            extracted.blurb ?? row.blurb,
+            extracted.author ?? null,
+            extracted.publishedAt ?? row.published_at,
+            extracted.contentText,
+            extracted.contentHtml,
+            analysis.summary,
+            analysis.whyRelevant,
+            toJson(analysis.keyTakeaways),
+            toJson(analysis.contentLabels),
+            analysis.listLabel,
+            analysis.relevanceScore,
+            analysis.digestEligible ? 1 : 0,
+            analyzedAt,
+            analyzedAt,
+            row.id,
+          ],
         );
-      });
 
-      this.store.run(
-        `
-        UPDATE articles SET
-          title = ?,
-          blurb = COALESCE(?, blurb),
-          author = ?,
-          published_at = COALESCE(?, published_at),
-          content_text = ?,
-          content_html = ?,
-          summary = ?,
-          why_relevant = ?,
-          key_takeaways_json = ?,
-          content_labels_json = ?,
-          list_label = ?,
-          relevance_score = ?,
-          digest_eligible = ?,
-          analysis_status = 'done',
-          analyzed_at = ?,
-          updated_at = ?
-        WHERE id = ?
-        `,
-        [
-          extracted.title,
-          extracted.blurb ?? row.blurb,
-          extracted.author ?? null,
-          extracted.publishedAt ?? row.published_at,
-          extracted.contentText,
-          extracted.contentHtml,
-          analysis.summary,
-          analysis.whyRelevant,
-          toJson(analysis.keyTakeaways),
-          toJson(analysis.contentLabels),
-          analysis.listLabel,
-          analysis.relevanceScore,
-          analysis.digestEligible ? 1 : 0,
-          analyzedAt,
-          analyzedAt,
-          row.id,
-        ],
-      );
+        for (const candidate of analysis.ruleCandidates) {
+          this.upsertLearningCandidate({
+            articleId: row.id,
+            candidate,
+            analyzedAt,
+          });
+        }
 
-      for (const candidate of analysis.ruleCandidates) {
-        this.upsertLearningCandidate({
+        outputs.push({
           articleId: row.id,
-          candidate,
-          analyzedAt,
+          sourceId: row.source_id ?? undefined,
+          title: extracted.title,
+          canonicalUrl: row.canonical_url,
+          publishedAt: extracted.publishedAt ?? row.published_at ?? undefined,
+          listLabel: analysis.listLabel,
+          contentLabels: analysis.contentLabels,
+          summary: analysis.summary,
+          whyRelevant: analysis.whyRelevant,
+          keyTakeaways: analysis.keyTakeaways,
+          heroImages: analysis.heroImages,
+          digestEligible: analysis.digestEligible,
+          relevanceScore: analysis.relevanceScore,
+          ruleCandidates: analysis.ruleCandidates,
         });
+      } catch {
+        this.store.run(
+          `
+          UPDATE articles SET
+            analysis_status = 'failed',
+            updated_at = ?
+          WHERE id = ?
+          `,
+          [nowIso(), row.id],
+        );
       }
-
-      outputs.push({
-        articleId: row.id,
-        sourceId: row.source_id ?? undefined,
-        title: extracted.title,
-        canonicalUrl: row.canonical_url,
-        publishedAt: extracted.publishedAt ?? row.published_at ?? undefined,
-        listLabel: analysis.listLabel,
-        contentLabels: analysis.contentLabels,
-        summary: analysis.summary,
-        whyRelevant: analysis.whyRelevant,
-        keyTakeaways: analysis.keyTakeaways,
-        heroImages: analysis.heroImages,
-        digestEligible: analysis.digestEligible,
-        relevanceScore: analysis.relevanceScore,
-        ruleCandidates: analysis.ruleCandidates,
-      });
     }
 
     return outputs;
@@ -1009,6 +1023,7 @@ export class WechatDigestService {
       wrapperPath: process.env.OPENCLAW_CLI_WRAPPER ?? "",
       target: params.target,
       messages: params.messages,
+      wechatConfig: this.loaded.rules.delivery?.wechat,
     });
 
     params.messages.forEach((message, index) => {
@@ -1187,6 +1202,7 @@ export class WechatDigestService {
         wrapperPath: process.env.OPENCLAW_CLI_WRAPPER ?? "",
         target: confirmedTarget,
         messages,
+        wechatConfig: this.loaded.rules.delivery?.wechat,
       });
       sentCount = delivery.sentCount;
 

@@ -5,6 +5,7 @@ sources:
     discovery:
       type: html_list
       url: https://aiera.com.cn/
+      maxItems: 10
       selectors:
         item: article.entry-card
         title: h2.entry-title a
@@ -17,6 +18,7 @@ sources:
     discovery:
       type: json_list
       url: https://www.jiqizhixin.com/api/article_library/articles.json?page=1&per=20
+      maxItems: 12
       json:
         listPath: articles
         titleField: title
@@ -31,6 +33,7 @@ sources:
     discovery:
       type: html_list
       url: https://www.qbitai.com/
+      maxItems: 10
       selectors:
         item: .article_list .picture_text
         title: .text_box h4 a
@@ -43,6 +46,7 @@ sources:
     discovery:
       type: html_list
       url: https://developer.volcengine.com/user/1303377297282596
+      maxItems: 8
       selectors:
         item: '[class*="article-item-container"]'
         title: '[class*="article-title"] a'
