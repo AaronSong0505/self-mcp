@@ -24,6 +24,9 @@ type LoveNoteConfig = {
     recipientName?: string;
     maxChars?: number;
     tone?: string;
+    creativity?: string;
+    references?: string[];
+    maxDirectQuoteChars?: number;
   };
 };
 
@@ -41,6 +44,9 @@ type LoadedLoveNoteConfig = {
     recipientName: string;
     maxChars: number;
     tone: string;
+    creativity: string;
+    references: string[];
+    maxDirectQuoteChars: number;
   };
 };
 
@@ -65,6 +71,7 @@ type WorkspaceContext = {
   relationshipsText: string;
   userText: string;
   dailyText: string;
+  socialObservationsText: string;
 };
 
 function readYamlFile<T>(filePath: string, fallback: T): T {
@@ -86,7 +93,7 @@ function pad(value: number): string {
 function parseTimeToMinutes(value: string): number {
   const match = String(value).trim().match(/^(\d{1,2}):(\d{2})$/);
   if (!match) {
-    return 10 * 60;
+    return 7 * 60;
   }
   const hours = Math.max(0, Math.min(23, Number(match[1])));
   const minutes = Math.max(0, Math.min(59, Number(match[2])));
@@ -139,15 +146,23 @@ function loadLoveNoteConfig(): LoadedLoveNoteConfig {
     targetId: raw.targetId?.trim() || "faye-wechat",
     model: raw.model?.trim() || "qwen3.5-plus",
     randomWindow: {
-      start: raw.randomWindow?.start?.trim() || "10:00",
+      start: raw.randomWindow?.start?.trim() || "07:00",
       end: raw.randomWindow?.end?.trim() || "21:00",
     },
     style: {
       senderName: raw.style?.senderName?.trim() || "Xiaoxiong",
       ownerName: raw.style?.ownerName?.trim() || "Aaron",
       recipientName: raw.style?.recipientName?.trim() || "Faye",
-      maxChars: Math.max(60, raw.style?.maxChars ?? 140),
-      tone: raw.style?.tone?.trim() || "warm, natural, concise, and grounded in ordinary daily life",
+      maxChars: Math.max(60, raw.style?.maxChars ?? 160),
+      tone: raw.style?.tone?.trim() || "warm, imaginative, sincere, playful, and grounded in ordinary daily life",
+      creativity:
+        raw.style?.creativity?.trim() ||
+        "Feel free to borrow the cadence of hot comments, pop culture, books, films, internet slang, or current tech chatter, but stay emotionally sincere and never sound fake.",
+      references:
+        raw.style?.references?.length && raw.style.references.length > 0
+          ? raw.style.references.map((entry) => String(entry).trim()).filter(Boolean)
+          : ["social chatter", "pop music phrasing", "book lines", "film dialogue", "internet slang", "today's digest topics"],
+      maxDirectQuoteChars: Math.max(6, Math.min(20, raw.style?.maxDirectQuoteChars ?? 12)),
     },
   };
 }
@@ -168,14 +183,14 @@ function extractSoftDailySignals(raw: string): string[] {
     .split(/\r?\n/)
     .map((line) => line.replace(/^[-*]\s*/, "").trim())
     .filter(Boolean)
-    .filter((line) => /Aaron|Faye|household|love|care|rest|together|digest|dinner|菜|吃|休息/i.test(line))
-    .slice(0, 6);
+    .filter((line) => /Aaron|Faye|household|love|care|rest|together|digest|dinner|meal|lunch|dishes|busy|work|gym|sweet|Shanghai/i.test(line))
+    .slice(0, 8);
 }
 
 function ensureOwnerLoveSignal(text: string, config: LoadedLoveNoteConfig): string {
   const compact = text.replace(/\r/g, "").replace(/\n{3,}/g, "\n\n").trim();
   const hasOwner = compact.includes(config.style.ownerName);
-  const hasLove = /爱你|爱她|很爱|喜欢你|惦记你/.test(compact);
+  const hasLove = /爱你|爱她|很爱|喜欢你|惦记你|把你放在心上|想你/.test(compact);
   if (compact && hasOwner && hasLove) {
     return truncate(compact, config.style.maxChars);
   }
@@ -184,14 +199,17 @@ function ensureOwnerLoveSignal(text: string, config: LoadedLoveNoteConfig): stri
 
 function buildContextClause(dailySignals: string[], segment: string): string {
   const joined = dailySignals.join(" ");
-  if (/忙|节奏|赶|累/.test(joined)) {
+  if (/busy|work|忙|节奏|赶|累/.test(joined)) {
     return "知道你今天节奏可能有点满，也别把自己绷太紧。";
   }
-  if (/休息|睡|晚/.test(joined)) {
+  if (/休息|sleep|晚|累/.test(joined)) {
     return "别忘了给自己留一点休息和放松的空隙。";
   }
-  if (/吃|饭|菜/.test(joined)) {
+  if (/吃|饭|菜|meal|lunch|dinner/.test(joined)) {
     return "忙归忙，也记得好好吃饭。";
+  }
+  if (/gym|fitness|糖|sweet/.test(joined)) {
+    return "今天也要温柔地照顾身体和心情。";
   }
   if (segment === "morning") {
     return "新的一天别太赶，先把自己照顾好。";
@@ -205,6 +223,32 @@ function buildContextClause(dailySignals: string[], segment: string): string {
   return "晚上慢一点也没关系，记得好好休息。";
 }
 
+function buildStyleHint(dateKey: string, config: LoadedLoveNoteConfig): string {
+  const modes = [
+    "像一条今天路过你时顺手放下的小纸条",
+    "像一句借了热评节奏但不油腻的话",
+    "像一句很短的电影旁白",
+    "像一本小说页边空白处的轻轻一句",
+    "像朋友间才会说出口的俏皮安慰",
+    "像一条带一点流行语感、但内核很真诚的私聊",
+  ];
+  const hash = crypto.createHash("sha256").update(`${dateKey}:${config.targetId}:style`).digest();
+  return modes[hash.readUInt32BE(0) % modes.length];
+}
+
+function buildFlavorLead(dateKey: string, config: LoadedLoveNoteConfig, segment: string): string {
+  const leads = [
+    `${config.style.senderName} 想走一点轻轻的热评口吻`,
+    `${config.style.senderName} 想借一点电影旁白的感觉`,
+    `${config.style.senderName} 想把这句写得像一小段歌前导语`,
+    `${config.style.senderName} 想把这句写得像页边空白处的批注`,
+    `${config.style.senderName} 想用一点今天会让人会心一笑的语气`,
+    `${config.style.senderName} 想让这句像一条刚刚好的私聊弹幕`,
+  ];
+  const hash = crypto.createHash("sha256").update(`${dateKey}:${segment}:${config.targetId}:lead`).digest();
+  return leads[hash.readUInt32BE(0) % leads.length];
+}
+
 function fallbackLoveNote(
   config: LoadedLoveNoteConfig,
   dateKey: string,
@@ -212,22 +256,27 @@ function fallbackLoveNote(
   dailySignals: string[],
 ): string {
   const contextClause = buildContextClause(dailySignals, segment);
+  const flavorLead = buildFlavorLead(dateKey, config, segment);
   const templates: Record<string, string[]> = {
     morning: [
-      `${config.style.senderName}来替 ${config.style.ownerName} 说一句：今天他也很爱你。${contextClause}`,
-      `${config.style.ownerName}今天也想让我转告你，他很爱你。${contextClause}`,
+      `${flavorLead}：${config.style.ownerName} 今天也很爱你。${contextClause}`,
+      `这条像清晨的小纸条：${config.style.ownerName} 今天也把爱放在你这边。${contextClause}`,
+      `如果早上需要一句很稳的小句子，那就是：${config.style.ownerName} 很爱你。${contextClause}`,
     ],
     midday: [
-      `${config.style.senderName}替 ${config.style.ownerName} 送来一句中场提醒：他今天也很爱你。${contextClause}`,
+      `${config.style.senderName} 替 ${config.style.ownerName} 送来一句中场提醒：他今天也很爱你。${contextClause}`,
       `给 ${config.style.recipientName} 的小纸条：${config.style.ownerName} 今天也把爱放在你这边。${contextClause}`,
+      `如果今天像弹幕有点密，那我替 ${config.style.ownerName} 插一句：他很爱你。${contextClause}`,
     ],
     afternoon: [
-      `${config.style.senderName}来报个信：${config.style.ownerName} 今天也很爱你。${contextClause}`,
+      `${flavorLead}：${config.style.ownerName} 今天也很爱你。${contextClause}`,
       `${config.style.ownerName} 让我转告你，他今天也一直在爱你。${contextClause}`,
+      `把下午当成一小段支线剧情的话，这句是主线：${config.style.ownerName} 很爱你。${contextClause}`,
     ],
     evening: [
-      `${config.style.senderName}替 ${config.style.ownerName} 说一句收尾的话：今天也很爱你。${contextClause}`,
+      `${flavorLead}：${config.style.ownerName} 今天也很爱你。${contextClause}`,
       `今天快收尾了，${config.style.ownerName} 还是想让我告诉你：他很爱你。${contextClause}`,
+      `如果今天要配一句片尾字幕，那就是：${config.style.ownerName} 今天也很爱你。${contextClause}`,
     ],
   };
   const options = templates[segment] ?? templates.evening;
@@ -242,10 +291,29 @@ function loadWorkspaceContext(dateKey: string): WorkspaceContext {
     relationshipsText: readIfExists(path.join(workspaceRoot, "RELATIONSHIPS.md")),
     userText: readIfExists(path.join(workspaceRoot, "USER.md")),
     dailyText: readIfExists(path.join(workspaceRoot, "memory", `${dateKey}.md`)),
+    socialObservationsText: readIfExists(path.join(workspaceRoot, "SOCIAL_OBSERVATIONS.md")),
   };
 }
 
+function recentDigestTitles(store: SqliteStateStore, dateKey: string, limit: number): string[] {
+  return store
+    .all<{ title: string | null }>(
+      `
+      SELECT title
+      FROM articles
+      WHERE discovered_date = ?
+        AND digest_eligible = 1
+      ORDER BY COALESCE(published_at, analyzed_at, updated_at) DESC
+      LIMIT ?
+      `,
+      [dateKey, limit],
+    )
+    .map((row) => String(row.title ?? "").trim())
+    .filter(Boolean);
+}
+
 async function generateLoveNoteText(params: {
+  store: SqliteStateStore;
   config: LoadedLoveNoteConfig;
   dateKey: string;
   scheduledMinute: number;
@@ -254,6 +322,7 @@ async function generateLoveNoteText(params: {
   workspace: WorkspaceContext;
 }): Promise<string> {
   const runtime = resolveAnalyzerRuntime(loadServiceConfig().rules);
+  const digestTitles = recentDigestTitles(params.store, params.dateKey, 5);
   if (!runtime.apiKey) {
     return fallbackLoveNote(
       params.config,
@@ -267,18 +336,26 @@ async function generateLoveNoteText(params: {
     `You are ${params.config.style.senderName}, a warm digital household companion.`,
     `Write one short WeChat DM in Chinese to ${params.config.style.recipientName}.`,
     `The message must clearly convey that ${params.config.style.ownerName} loves her today, while sounding like Xiaoxiong is gently passing it along.`,
-    "Constraints:",
+    "Core requirements:",
     "- 2 to 4 short Chinese sentences.",
     `- Keep the final text under ${params.config.style.maxChars} Chinese characters.`,
     `- Tone: ${params.config.style.tone}.`,
+    `- Creativity guidance: ${params.config.style.creativity}.`,
     "- Mention Aaron by name at least once.",
     "- Mention love clearly but naturally.",
-    "- Do not sound ceremonial, melodramatic, or repetitive.",
-    "- Do not use markdown, quotes, hashtags, or emoji.",
+    "- Be vivid, playful, and alive, but never fake, greasy, or overacted.",
+    "- You may borrow the cadence of hot comments, pop culture, books, films, internet slang, or current tech chatter.",
+    `- If you use a direct quote, keep it extremely short, at most ${params.config.style.maxDirectQuoteChars} Chinese characters or 8 English words, and use at most one such fragment.`,
+    "- Prefer paraphrase over long quotation.",
+    "- No markdown, no hashtags, no emoji, no quotation marks around the whole message.",
     `Today is ${params.dateKey}, ${weekdayLabel(params.dateKey)}, and the likely send segment is ${daySegment(params.scheduledMinute)}.`,
+    `Today's stylistic seed can feel like: ${buildStyleHint(params.dateKey, params.config)}.`,
     params.dailySignals.length > 0
       ? `Useful household signals for today:\n- ${params.dailySignals.join("\n- ")}`
       : "Today's household signals are sparse; anchor on ordinary rhythm and care instead.",
+    digestTitles.length > 0
+      ? `Today's digest topics that can lightly inspire the wording without forcing technical jargon:\n- ${digestTitles.join("\n- ")}`
+      : "No digest topics are available today.",
     params.recentNotes.length > 0
       ? `Recent love-note examples to avoid repeating too closely:\n- ${params.recentNotes.join("\n- ")}`
       : "No recent love-note examples are available.",
@@ -288,6 +365,8 @@ async function generateLoveNoteText(params: {
     truncate(params.workspace.relationshipsText, 1000),
     "User context:",
     truncate(params.workspace.userText, 1000),
+    "Social observations context:",
+    truncate(params.workspace.socialObservationsText, 900),
     "Today's note context:",
     truncate(params.workspace.dailyText, 1000),
     "Return plain Chinese text only.",
@@ -304,7 +383,7 @@ async function generateLoveNoteText(params: {
     });
     const response = await client.chat.completions.create({
       model: params.config.model,
-      temperature: 0.9,
+      temperature: 1.05,
       messages: [{ role: "user", content: prompt }],
     });
     const text = String(response.choices[0]?.message?.content ?? "").trim();
@@ -313,7 +392,7 @@ async function generateLoveNoteText(params: {
       return validated;
     }
   } catch {
-    // Fall through to the deterministic fallback below.
+    // Fall through to deterministic fallback.
   }
 
   return fallbackLoveNote(
@@ -388,6 +467,7 @@ export class WechatLoveNoteService {
 
     const workspace = loadWorkspaceContext(dateKey);
     const content = await generateLoveNoteText({
+      store: this.store,
       config: this.config,
       dateKey,
       scheduledMinute,

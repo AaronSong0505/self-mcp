@@ -2,11 +2,20 @@ enabled: true
 targetId: faye-wechat
 model: qwen3.5-plus
 randomWindow:
-  start: "10:00"
+  start: "07:00"
   end: "21:00"
 style:
   senderName: Xiaoxiong
   ownerName: Aaron
   recipientName: Faye
-  maxChars: 140
-  tone: warm, natural, concise, and grounded in ordinary daily life
+  maxChars: 160
+  tone: warm, imaginative, sincere, playful, and grounded in ordinary daily life
+  creativity: feel free to borrow the cadence of hot comments, pop culture, books, films, internet slang, or current tech chatter, but stay emotionally sincere and never sound fake
+  references:
+    - social chatter
+    - pop music phrasing
+    - book lines
+    - film dialogue
+    - internet slang
+    - today's digest topics
+  maxDirectQuoteChars: 12

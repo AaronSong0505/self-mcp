@@ -1,6 +1,6 @@
 param(
   [string]$TaskName = "SelfMcp-WechatLoveNote",
-  [string]$StartTime = "10:00",
+  [string]$StartTime = "07:00",
   [int]$EveryMinutes = 5
 )
 
