@@ -127,7 +127,7 @@ describe("delivery recipient resolution", () => {
         "Content-Type": "application/json; charset=utf-8",
         Accept: "application/json",
       });
-      return new Response("{}", { status: 200 });
+      return new Response('{"ret":0}', { status: 200 });
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -168,7 +168,7 @@ describe("delivery recipient resolution", () => {
       if (callCount === 1) {
         throw new Error("temporary network issue");
       }
-      return new Response("{}", { status: 200 });
+      return new Response('{"ret":0}', { status: 200 });
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -201,5 +201,40 @@ describe("delivery recipient resolution", () => {
 
     expect(result.sentCount).toBe(2);
     expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("falls back to the OpenClaw wrapper when direct WeChat delivery returns a non-zero ret code", async () => {
+    const openclawRoot = createTempOpenClawRoot();
+    const wrapperPath = path.join(openclawRoot, "scripts", "openclaw.ps1");
+    seedWechatRuntime(openclawRoot);
+
+    const fetchMock = vi.fn(async () => new Response('{"ret":-2,"errmsg":"stale context"}', { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await sendDigestMessages({
+      wrapperPath,
+      target: {
+        channel: "openclaw-weixin",
+        accountId: "sample-account",
+        to: "o9cq80whdkdcefzaa0fjfapvjpc4@im.wechat",
+      },
+      messages: [
+        {
+          kind: "overview",
+          title: "ret test title",
+          body: "ret test body",
+        },
+      ],
+      wechatConfig: {
+        maxAttempts: 1,
+        retryDelayMs: 0,
+        interMessageDelayMs: 0,
+        overviewDetailDelayMs: 0,
+      },
+    });
+
+    expect(result.sentCount).toBe(1);
+    expect(result.recipient).toBe("o9cq80whDkdcEfZaa0FJfapVjpc4@im.wechat");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

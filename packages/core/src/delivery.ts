@@ -202,6 +202,34 @@ function formatDigestMessage(message: DigestMessage): string {
   return `${message.title}\n\n${message.body}`.trim();
 }
 
+function assertWechatBusinessSuccess(rawText: string): void {
+  const trimmed = rawText.trim();
+  if (!trimmed) {
+    return;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return;
+  }
+
+  if (!parsed || typeof parsed !== "object" || !("ret" in parsed)) {
+    return;
+  }
+
+  const ret = Number((parsed as { ret?: unknown }).ret);
+  if (!Number.isFinite(ret) || ret === 0) {
+    return;
+  }
+
+  const errmsg = String((parsed as { errmsg?: unknown }).errmsg ?? "").trim();
+  throw new Error(
+    `Direct Weixin send business failure (ret=${ret}${errmsg ? `, errmsg=${errmsg}` : ""}): ${trimmed}`,
+  );
+}
+
 function delayBeforeMessage(index: number, messages: DigestMessage[], config: Required<WechatDeliveryConfig>): number {
   if (index <= 0) {
     return 0;
@@ -212,6 +240,17 @@ function delayBeforeMessage(index: number, messages: DigestMessage[], config: Re
     return config.overviewDetailDelayMs;
   }
   return config.interMessageDelayMs;
+}
+
+class DirectWechatDeliveryError extends Error {
+  constructor(
+    message: string,
+    readonly sentCount: number,
+    readonly recipient: string,
+  ) {
+    super(message);
+    this.name = "DirectWechatDeliveryError";
+  }
 }
 
 async function postWechatText(params: {
@@ -242,6 +281,7 @@ async function postWechatText(params: {
       if (!response.ok) {
         throw new Error(`Direct Weixin send failed (${response.status}): ${rawText}`);
       }
+      assertWechatBusinessSuccess(rawText);
       return;
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
@@ -284,45 +324,36 @@ async function sendWechatDigestMessagesDirect(params: {
   for (const [index, message] of messages.entries()) {
     await sleep(delayBeforeMessage(index, messages, config));
     const text = formatDigestMessage(message);
-    await postWechatText({
-      account,
-      headersBase,
-      recipient,
-      text,
-      contextToken,
-      channelVersion,
-      config,
-    });
+    try {
+      await postWechatText({
+        account,
+        headersBase,
+        recipient,
+        text,
+        contextToken,
+        channelVersion,
+        config,
+      });
+    } catch (error) {
+      throw new DirectWechatDeliveryError(
+        error instanceof Error ? error.message : String(error),
+        sentCount,
+        recipient,
+      );
+    }
     sentCount += 1;
   }
 
   return { sentCount, recipient };
 }
 
-export async function sendDigestMessages(params: {
+function sendMessagesViaWrapper(params: {
   wrapperPath: string;
   target: DeliveryTargetConfig;
   messages: DigestMessage[];
-  wechatConfig?: WechatDeliveryConfig;
-}): Promise<{ sentCount: number; recipient: string }> {
-  const { wrapperPath, target, messages } = params;
-  if (!wrapperPath) {
-    throw new Error("OPENCLAW_CLI_WRAPPER is not configured.");
-  }
-
-  const recipient = resolveDeliveryRecipient(wrapperPath, target);
-  if (target.channel === "openclaw-weixin" && target.accountId) {
-    return sendWechatDigestMessagesDirect({
-      wrapperPath,
-      target: {
-        ...target,
-        to: recipient,
-      },
-      messages,
-      config: params.wechatConfig,
-    });
-  }
-
+  recipient: string;
+}): { sentCount: number; recipient: string } {
+  const { wrapperPath, target, messages, recipient } = params;
   let sentCount = 0;
   for (const message of messages) {
     const text = formatDigestMessage(message);
@@ -358,4 +389,54 @@ export async function sendDigestMessages(params: {
   }
 
   return { sentCount, recipient };
+}
+
+export async function sendDigestMessages(params: {
+  wrapperPath: string;
+  target: DeliveryTargetConfig;
+  messages: DigestMessage[];
+  wechatConfig?: WechatDeliveryConfig;
+}): Promise<{ sentCount: number; recipient: string }> {
+  const { wrapperPath, target, messages } = params;
+  if (!wrapperPath) {
+    throw new Error("OPENCLAW_CLI_WRAPPER is not configured.");
+  }
+
+  const recipient = resolveDeliveryRecipient(wrapperPath, target);
+  if (target.channel === "openclaw-weixin" && target.accountId) {
+    try {
+      return await sendWechatDigestMessagesDirect({
+        wrapperPath,
+        target: {
+          ...target,
+          to: recipient,
+        },
+        messages,
+        config: params.wechatConfig,
+      });
+    } catch (error) {
+      const alreadySent = error instanceof DirectWechatDeliveryError ? error.sentCount : 0;
+      const remaining = messages.slice(alreadySent);
+      if (remaining.length === 0) {
+        return { sentCount: alreadySent, recipient };
+      }
+      const fallback = sendMessagesViaWrapper({
+        wrapperPath,
+        target,
+        messages: remaining,
+        recipient,
+      });
+      return {
+        sentCount: alreadySent + fallback.sentCount,
+        recipient,
+      };
+    }
+  }
+
+  return sendMessagesViaWrapper({
+    wrapperPath,
+    target,
+    messages,
+    recipient,
+  });
 }

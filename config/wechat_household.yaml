@@ -1,0 +1,23 @@
+enabled: true
+title: 小熊帮忙转一句 🐻
+maxChars: 600
+
+people:
+  Aaron:
+    targetId: aaron-wechat
+    aliases:
+      - Aaron
+      - 老公
+      - 亚纶
+  Faye:
+    targetId: faye-wechat
+    aliases:
+      - Faye
+      - 老婆
+      - 菲菲
+
+allowedPairs:
+  - from: Faye
+    to: Aaron
+  - from: Aaron
+    to: Faye

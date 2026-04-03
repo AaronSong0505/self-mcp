@@ -122,6 +122,23 @@ export class SqliteStateStore {
         error TEXT
       );
 
+      CREATE TABLE IF NOT EXISTS household_relays (
+        id TEXT PRIMARY KEY,
+        relay_date TEXT NOT NULL,
+        from_person TEXT NOT NULL,
+        from_target_id TEXT NOT NULL,
+        to_person TEXT NOT NULL,
+        to_target_id TEXT NOT NULL,
+        request_text TEXT NOT NULL,
+        forwarded_text TEXT NOT NULL,
+        status TEXT NOT NULL,
+        source_recipient TEXT,
+        destination_recipient TEXT,
+        created_at TEXT NOT NULL,
+        sent_at TEXT,
+        error TEXT
+      );
+
       CREATE TABLE IF NOT EXISTS rule_candidates (
         id TEXT PRIMARY KEY,
         short_code TEXT NOT NULL UNIQUE,
@@ -164,6 +181,8 @@ export class SqliteStateStore {
       CREATE INDEX IF NOT EXISTS idx_articles_analysis_status ON articles(analysis_status);
       CREATE INDEX IF NOT EXISTS idx_deliveries_target ON deliveries(target_id, status);
       CREATE INDEX IF NOT EXISTS idx_love_note_target_date ON love_note_deliveries(target_id, note_date, status);
+      CREATE INDEX IF NOT EXISTS idx_household_relays_to_date ON household_relays(to_target_id, relay_date, status);
+      CREATE INDEX IF NOT EXISTS idx_household_relays_from_date ON household_relays(from_target_id, relay_date, status);
       CREATE INDEX IF NOT EXISTS idx_rule_candidates_status ON rule_candidates(status, last_seen_at);
       CREATE UNIQUE INDEX IF NOT EXISTS idx_rule_candidates_key
         ON rule_candidates(candidate_type, normalized_value, target_bucket, COALESCE(target_label, ''));
