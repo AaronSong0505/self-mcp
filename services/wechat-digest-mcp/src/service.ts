@@ -57,6 +57,7 @@ type FollowupParams = {
 
 type StatusParams = {
   date?: string;
+  targetId?: string;
 };
 
 type PendingParams = {
@@ -1481,6 +1482,7 @@ export class WechatDigestService {
   async status(params: StatusParams = {}): Promise<StatusOutput> {
     this.ensureLearningStatusesCurrent();
     const statusDate = params.date ?? toDateKey(new Date());
+    const statusTargetId = params.targetId ?? "aaron-wechat";
     const statusSourcesEnabled = this.resolveSources().length;
     const statusDiscovered = Number(
       this.store.get<{ count: number }>("SELECT COUNT(*) AS count FROM discoveries WHERE discovered_date = ?", [statusDate])
@@ -1501,14 +1503,45 @@ export class WechatDigestService {
     const statusDelivered = Number(
       this.store.get<{ count: number }>(
         `
-        SELECT COUNT(DISTINCT article_id) AS count FROM deliveries
-        WHERE target_id = 'aaron-wechat'
+        SELECT COUNT(DISTINCT article_id) AS count
+        FROM deliveries
+        WHERE target_id = ?
           AND status = 'sent'
           AND article_id IS NOT NULL
           AND sent_at LIKE ?
         `,
-        [`${statusDate}%`],
+        [statusTargetId, `${statusDate}%`],
       )?.count ?? 0,
+    );
+    const statusQueuedCandidates = Number(
+      this.store.get<{ count: number }>(
+        `
+        SELECT COUNT(*) AS count
+        FROM articles
+        WHERE discovered_date = ?
+          AND analysis_status = 'done'
+          AND digest_eligible = 1
+          AND id NOT IN (
+            SELECT article_id
+            FROM deliveries
+            WHERE target_id = ?
+              AND status = 'sent'
+              AND article_id IS NOT NULL
+          )
+        `,
+        [statusDate, statusTargetId],
+      )?.count ?? 0,
+    );
+    const latestDigest = this.store.get<{ status: string | null; detail_count: number | null }>(
+      `
+      SELECT status, detail_count
+      FROM digests
+      WHERE digest_date = ?
+        AND target_id = ?
+      ORDER BY created_at DESC
+      LIMIT 1
+      `,
+      [statusDate, statusTargetId],
     );
     const statusPendingLearning = Number(
       this.store.get<{ count: number }>(
@@ -1517,54 +1550,19 @@ export class WechatDigestService {
     );
     return {
       date: statusDate,
+      targetId: statusTargetId,
       sourcesEnabled: statusSourcesEnabled,
       discovered: statusDiscovered,
       analyzed: statusAnalyzed,
       digestEligible: statusDigestEligible,
       delivered: statusDelivered,
-      pendingDelivery: Math.max(statusDigestEligible - statusDelivered, 0),
+      queuedCandidates: statusQueuedCandidates,
+      pendingDelivery:
+        latestDigest?.status && latestDigest.status !== "sent"
+          ? Math.max(Number(latestDigest.detail_count ?? 0), 0)
+          : 0,
+      latestDigestStatus: latestDigest?.status ?? "none",
       pendingLearning: statusPendingLearning,
-    };
-
-    const date = params.date ?? toDateKey(new Date());
-    const sourcesEnabled = this.resolveSources().length;
-    const discovered = Number(
-      this.store.get<{ count: number }>("SELECT COUNT(*) AS count FROM discoveries WHERE discovered_date = ?", [date])
-        ?.count ?? 0,
-    );
-    const analyzed = Number(
-      this.store.get<{ count: number }>(
-        "SELECT COUNT(*) AS count FROM articles WHERE discovered_date = ? AND analysis_status = 'done'",
-        [date],
-      )?.count ?? 0,
-    );
-    const digestEligible = Number(
-      this.store.get<{ count: number }>(
-        "SELECT COUNT(*) AS count FROM articles WHERE discovered_date = ? AND digest_eligible = 1",
-        [date],
-      )?.count ?? 0,
-    );
-    const delivered = Number(
-      this.store.get<{ count: number }>(
-        `
-        SELECT COUNT(DISTINCT article_id) AS count FROM deliveries
-        WHERE target_id = 'aaron-wechat'
-          AND status = 'sent'
-          AND article_id IS NOT NULL
-          AND sent_at LIKE ?
-        `,
-        [`${date}%`],
-      )?.count ?? 0,
-    );
-    return {
-      date,
-      sourcesEnabled,
-      discovered,
-      analyzed,
-      digestEligible,
-      delivered,
-      pendingDelivery: Math.max(digestEligible - delivered, 0),
-      pendingLearning: 0,
     };
   }
 }

@@ -506,7 +506,7 @@ export class WechatLoveNoteService {
         messages: [
           {
             kind: "overview",
-            title: "小熊的小纸条",
+            title: "小熊的小纸条 🐻",
             body: content,
           } satisfies DigestMessage,
         ],

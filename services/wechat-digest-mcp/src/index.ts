@@ -156,14 +156,19 @@ async function main() {
     "Show today's scan/analyze/delivery status for the digest pipeline.",
     {
       date: z.string().optional(),
+      targetId: z.string().optional(),
     },
-    async ({ date }) => {
-      const result = await service.status({ date });
+    async ({ date, targetId }) => {
+      const result = await service.status({ date, targetId });
       return {
         content: [
           {
             type: "text",
-            text: `Status ${result.date}: discovered=${result.discovered}, analyzed=${result.analyzed}, delivered=${result.delivered}, pendingLearning=${result.pendingLearning}.`,
+            text:
+              `Status ${result.date}/${result.targetId}: discovered=${result.discovered}, ` +
+              `analyzed=${result.analyzed}, delivered=${result.delivered}, ` +
+              `queuedCandidates=${result.queuedCandidates}, pendingDelivery=${result.pendingDelivery}, ` +
+              `latestDigestStatus=${result.latestDigestStatus}, pendingLearning=${result.pendingLearning}.`,
           },
         ],
         structuredContent: result,

@@ -133,6 +133,71 @@ describe("digest build", () => {
     expect(digest.candidateCount).toBe(1);
     expect(digest.messages).toHaveLength(2);
     expect(status.delivered).toBe(0);
+    expect(status.queuedCandidates).toBe(1);
+    expect(status.pendingDelivery).toBe(0);
+    expect(status.latestDigestStatus).toBe("none");
+  });
+
+  it("treats pendingDelivery as unresolved digest send debt instead of raw backlog", async () => {
+    const root = createTempRoot();
+    writeConfig(root);
+    const service = await createService(root);
+    const store = (service as unknown as { store: { run: (sql: string, params?: unknown[]) => void } }).store;
+
+    store.run(
+      `
+      INSERT INTO articles (
+        id, source_id, discovery_id, canonical_url, article_url, title, blurb,
+        published_at, discovered_date, content_text, content_html, summary, why_relevant,
+        key_takeaways_json, content_labels_json, list_label, relevance_score,
+        digest_eligible, analysis_status, analyzed_at, updated_at
+      ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        "article-2",
+        "sample",
+        "https://example.com/article-2",
+        "https://example.com/article-2",
+        "Queued article",
+        "queued blurb",
+        "2026-04-03T00:00:00.000Z",
+        "2026-04-03",
+        "body",
+        "<p>body</p>",
+        "summary",
+        "why",
+        JSON.stringify(["takeaway"]),
+        JSON.stringify(["AI/LLM"]),
+        "蹇呰",
+        8,
+        1,
+        "done",
+        "2026-04-03T00:10:00.000Z",
+        "2026-04-03T00:10:00.000Z",
+      ],
+    );
+
+    store.run(
+      `
+      INSERT INTO digests (id, digest_date, target_id, overview_text, detail_count, status, created_at, sent_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
+      `,
+      [
+        "digest-pending",
+        "2026-04-03",
+        "aaron-wechat",
+        "overview",
+        1,
+        "pending",
+        "2026-04-03T08:45:00.000Z",
+      ],
+    );
+
+    const status = await service.status({ date: "2026-04-03" });
+
+    expect(status.delivered).toBe(0);
+    expect(status.queuedCandidates).toBe(1);
     expect(status.pendingDelivery).toBe(1);
+    expect(status.latestDigestStatus).toBe("pending");
   });
 });

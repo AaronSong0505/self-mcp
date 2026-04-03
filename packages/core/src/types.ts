@@ -202,12 +202,15 @@ export type BuildDigestOutput = {
 
 export type StatusOutput = {
   date: string;
+  targetId: string;
   sourcesEnabled: number;
   discovered: number;
   analyzed: number;
   digestEligible: number;
   delivered: number;
+  queuedCandidates: number;
   pendingDelivery: number;
+  latestDigestStatus: string;
   pendingLearning: number;
 };
 
