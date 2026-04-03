@@ -15,6 +15,16 @@ function resolveWrapperWorkdir(wrapperPath: string): string {
   return path.dirname(path.dirname(wrapperPath));
 }
 
+function buildWrapperEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  const nodeExe = process.execPath;
+  const nodeDir = path.dirname(nodeExe);
+  env.OPENCLAW_NODE_EXE = nodeExe;
+  env.Path = env.Path ? `${nodeDir};${env.Path}` : nodeDir;
+  env.PATH = env.PATH ? `${nodeDir};${env.PATH}` : nodeDir;
+  return env;
+}
+
 function ensureTrailingSlash(url: string): string {
   return url.endsWith("/") ? url : `${url}/`;
 }
@@ -400,6 +410,7 @@ function sendMessagesViaWrapper(params: {
     const result = spawnSync("powershell.exe", args, {
       cwd: resolveWrapperWorkdir(wrapperPath),
       encoding: "utf8",
+      env: buildWrapperEnv(),
     });
     if (result.status !== 0) {
       throw new Error(
