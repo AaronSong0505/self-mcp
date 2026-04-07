@@ -413,8 +413,14 @@ function sendMessagesViaWrapper(params: {
       env: buildWrapperEnv(),
     });
     if (result.status !== 0) {
+      const detailedError =
+        result.error?.message?.trim() ||
+        result.stderr?.trim() ||
+        result.stdout?.trim() ||
+        (result.signal ? `signal=${result.signal}` : "") ||
+        String(result.status);
       throw new Error(
-        `OpenClaw message send failed: ${result.stderr?.trim() || result.stdout?.trim() || result.status}`,
+        `OpenClaw message send failed: ${detailedError}`,
       );
     }
     sentCount += 1;
