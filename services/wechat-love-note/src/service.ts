@@ -14,6 +14,7 @@ type LoveNoteConfig = {
   enabled?: boolean;
   targetId?: string;
   model?: string;
+  maxRecipientStalenessHours?: number;
   randomWindow?: {
     start?: string;
     end?: string;
@@ -34,6 +35,7 @@ type LoadedLoveNoteConfig = {
   enabled: boolean;
   targetId: string;
   model: string;
+  maxRecipientStalenessHours: number;
   randomWindow: {
     start: string;
     end: string;
@@ -59,10 +61,11 @@ type RunParams = {
 export type LoveNoteRunResult = {
   date: string;
   targetId: string;
-  status: "disabled" | "not_due" | "already_sent" | "dry_run" | "sent";
+  status: "disabled" | "not_due" | "already_sent" | "dry_run" | "stale_target" | "sent";
   scheduledFor: string;
   content?: string;
   recipient?: string;
+  error?: string;
   sentCount: number;
 };
 
@@ -138,6 +141,68 @@ function resolveWorkspaceRoot(): string {
   return path.join(path.resolve(selfMcpRoot, "..", "one-company"), "openclaw", "workspace");
 }
 
+function resolveOpenclawRoot(): string {
+  const wrapperPath = process.env.OPENCLAW_CLI_WRAPPER;
+  if (wrapperPath) {
+    return path.dirname(path.dirname(wrapperPath));
+  }
+  const selfMcpRoot = resolveServicePaths().rootDir;
+  return path.join(path.resolve(selfMcpRoot, "..", "one-company"), "openclaw");
+}
+
+type SessionOrigin = {
+  chatType?: string;
+  accountId?: string;
+  to?: string;
+};
+
+type SessionMeta = {
+  origin?: SessionOrigin;
+  updatedAt?: number;
+};
+
+function resolveRecipientLastActiveAt(target: DeliveryTargetConfig): string | undefined {
+  if (target.channel !== "openclaw-weixin" || !target.accountId || !target.to?.trim()) {
+    return undefined;
+  }
+
+  const sessionsPath = path.join(resolveOpenclawRoot(), ".openclaw-state", "agents", "main", "sessions", "sessions.json");
+  if (!fs.existsSync(sessionsPath)) {
+    return undefined;
+  }
+
+  let parsed: Record<string, SessionMeta>;
+  try {
+    parsed = JSON.parse(fs.readFileSync(sessionsPath, "utf8")) as Record<string, SessionMeta>;
+  } catch {
+    return undefined;
+  }
+
+  const targetTo = target.to.trim().toLowerCase();
+  let latestUpdatedAt = 0;
+  for (const value of Object.values(parsed)) {
+    const origin = value?.origin;
+    if (!origin) {
+      continue;
+    }
+    if (origin.chatType !== "direct") {
+      continue;
+    }
+    if ((origin.accountId ?? "").trim() !== target.accountId) {
+      continue;
+    }
+    if ((origin.to ?? "").trim().toLowerCase() !== targetTo) {
+      continue;
+    }
+    const updatedAt = Number(value.updatedAt ?? 0);
+    if (Number.isFinite(updatedAt) && updatedAt > latestUpdatedAt) {
+      latestUpdatedAt = updatedAt;
+    }
+  }
+
+  return latestUpdatedAt > 0 ? new Date(latestUpdatedAt).toISOString() : undefined;
+}
+
 function loadLoveNoteConfig(): LoadedLoveNoteConfig {
   const paths = resolveServicePaths();
   const raw = readYamlFile<LoveNoteConfig>(path.join(paths.configDir, "wechat_love_note.yaml"), {});
@@ -145,6 +210,7 @@ function loadLoveNoteConfig(): LoadedLoveNoteConfig {
     enabled: raw.enabled !== false,
     targetId: raw.targetId?.trim() || "faye-wechat",
     model: raw.model?.trim() || "qwen3.5-plus",
+    maxRecipientStalenessHours: Math.max(1, Math.min(168, Number(raw.maxRecipientStalenessHours ?? 48))),
     randomWindow: {
       start: raw.randomWindow?.start?.trim() || "07:00",
       end: raw.randomWindow?.end?.trim() || "21:00",
@@ -423,6 +489,17 @@ export class WechatLoveNoteService {
     return target;
   }
 
+  private staleTargetError(dateKey: string, scheduledFor: string, message: string): LoveNoteRunResult {
+    return {
+      date: dateKey,
+      targetId: this.config.targetId,
+      status: "stale_target",
+      scheduledFor,
+      sentCount: 0,
+      error: message,
+    };
+  }
+
   private alreadySent(dateKey: string): boolean {
     const row = this.store.get<{ count: number }>(
       "SELECT COUNT(*) AS count FROM love_note_deliveries WHERE note_date = ? AND target_id = ? AND status = 'sent'",
@@ -465,6 +542,36 @@ export class WechatLoveNoteService {
       return { date: dateKey, targetId: this.config.targetId, status: "not_due", scheduledFor, sentCount: 0 };
     }
 
+    const target = this.getTarget();
+    const lastActiveAt = resolveRecipientLastActiveAt(target);
+    if (!lastActiveAt) {
+      const message = `Target lane ${this.config.targetId} has no recent direct session metadata. Ask the recipient to send one fresh message first.`;
+      this.store.run(
+        `
+        INSERT INTO love_note_deliveries (
+          id, note_date, target_id, scheduled_for, status, content, to_recipient, created_at, sent_at, error
+        ) VALUES (?, ?, ?, ?, 'stale_target', NULL, NULL, ?, NULL, ?)
+        `,
+        [crypto.randomUUID(), dateKey, this.config.targetId, scheduledFor, nowIso(), message],
+      );
+      return this.staleTargetError(dateKey, scheduledFor, message);
+    }
+
+    const stalenessMs = now.getTime() - new Date(lastActiveAt).getTime();
+    const maxStalenessMs = this.config.maxRecipientStalenessHours * 60 * 60 * 1000;
+    if (stalenessMs > maxStalenessMs) {
+      const message = `Target lane ${this.config.targetId} is stale. Last direct activity was ${lastActiveAt}. Ask the recipient to send one fresh message first.`;
+      this.store.run(
+        `
+        INSERT INTO love_note_deliveries (
+          id, note_date, target_id, scheduled_for, status, content, to_recipient, created_at, sent_at, error
+        ) VALUES (?, ?, ?, ?, 'stale_target', NULL, NULL, ?, NULL, ?)
+        `,
+        [crypto.randomUUID(), dateKey, this.config.targetId, scheduledFor, nowIso(), message],
+      );
+      return this.staleTargetError(dateKey, scheduledFor, message);
+    }
+
     const workspace = loadWorkspaceContext(dateKey);
     const content = await generateLoveNoteText({
       store: this.store,
@@ -487,7 +594,6 @@ export class WechatLoveNoteService {
       };
     }
 
-    const target = this.getTarget();
     const deliveryId = crypto.randomUUID();
     const createdAt = nowIso();
     this.store.run(

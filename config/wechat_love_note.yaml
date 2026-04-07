@@ -1,6 +1,7 @@
 enabled: true
 targetId: faye-wechat
 model: qwen3.5-plus
+maxRecipientStalenessHours: 48
 randomWindow:
   start: "07:00"
   end: "21:00"

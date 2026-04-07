@@ -14,15 +14,36 @@ function createTempRoots() {
   const dataDir = path.join(root, "data");
   const openclawRoot = path.join(root, "openclaw");
   const workspaceRoot = path.join(openclawRoot, "workspace");
+  const sessionsRoot = path.join(openclawRoot, ".openclaw-state", "agents", "main", "sessions");
   fs.mkdirSync(configDir, { recursive: true });
   fs.mkdirSync(dataDir, { recursive: true });
   fs.mkdirSync(path.join(openclawRoot, "scripts"), { recursive: true });
   fs.mkdirSync(path.join(workspaceRoot, "memory"), { recursive: true });
+  fs.mkdirSync(sessionsRoot, { recursive: true });
   fs.writeFileSync(path.join(openclawRoot, "scripts", "openclaw.ps1"), "# mock", "utf8");
   fs.writeFileSync(path.join(workspaceRoot, "MEMORY.md"), "Aaron and Faye are a warm household.", "utf8");
   fs.writeFileSync(path.join(workspaceRoot, "RELATIONSHIPS.md"), "Faye is the family co-owner.", "utf8");
   fs.writeFileSync(path.join(workspaceRoot, "USER.md"), "Aaron and Faye live in Shanghai.", "utf8");
   fs.writeFileSync(path.join(workspaceRoot, "memory", "2026-04-03.md"), "- Aaron and Faye are having a busy day.\n", "utf8");
+  fs.writeFileSync(
+    path.join(sessionsRoot, "sessions.json"),
+    JSON.stringify(
+      {
+        "agent:main:openclaw-weixin:sample-account:direct:sample-faye@im.wechat": {
+          origin: {
+            provider: "openclaw-weixin",
+            chatType: "direct",
+            accountId: "sample-account",
+            to: "sample-faye@im.wechat",
+          },
+          updatedAt: Date.now() - 60 * 60 * 1000,
+        },
+      },
+      null,
+      2,
+    ),
+    "utf8",
+  );
   fs.writeFileSync(
     path.join(configDir, "wechat_digest_rules.yaml"),
     `deliveryTargets:
@@ -51,6 +72,7 @@ style:
   ownerName: Aaron
   recipientName: Faye
   maxChars: 140
+maxRecipientStalenessHours: 48
 `,
     "utf8",
   );
@@ -124,5 +146,42 @@ describe("wechat love note service", () => {
 
     expect(result.status).toBe("already_sent");
     expect(result.sentCount).toBe(0);
+  });
+
+  it("marks the target stale when the direct lane has not been active recently", async () => {
+    const { root, configDir, dataDir, openclawRoot } = createTempRoots();
+    process.env.WECHAT_DIGEST_ROOT = root;
+    process.env.WECHAT_DIGEST_CONFIG_DIR = configDir;
+    process.env.WECHAT_DIGEST_DATA_DIR = dataDir;
+    process.env.OPENCLAW_CLI_WRAPPER = path.join(openclawRoot, "scripts", "openclaw.ps1");
+    fs.writeFileSync(
+      path.join(openclawRoot, ".openclaw-state", "agents", "main", "sessions", "sessions.json"),
+      JSON.stringify(
+        {
+          "agent:main:openclaw-weixin:sample-account:direct:sample-faye@im.wechat": {
+            origin: {
+              provider: "openclaw-weixin",
+              chatType: "direct",
+              accountId: "sample-account",
+              to: "sample-faye@im.wechat",
+            },
+            updatedAt: Date.parse("2026-04-03T08:00:00.000Z"),
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const service = await WechatLoveNoteService.create();
+    const result = await service.run({
+      date: "2026-04-07",
+      force: true,
+    });
+
+    expect(result.status).toBe("stale_target");
+    expect(result.sentCount).toBe(0);
+    expect(result.error).toContain("Last direct activity was 2026-04-03T08:00:00.000Z");
   });
 });
