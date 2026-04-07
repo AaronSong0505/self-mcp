@@ -77,6 +77,16 @@ type WorkspaceContext = {
   socialObservationsText: string;
 };
 
+type StoredLoveNoteRow = {
+  id: string;
+  note_date: string;
+  scheduled_for: string;
+  status: string;
+  content: string | null;
+  to_recipient: string | null;
+  created_at: string;
+};
+
 function readYamlFile<T>(filePath: string, fallback: T): T {
   if (!fs.existsSync(filePath)) {
     return fallback;
@@ -139,6 +149,19 @@ function resolveWorkspaceRoot(): string {
   }
   const selfMcpRoot = resolveServicePaths().rootDir;
   return path.join(path.resolve(selfMcpRoot, "..", "one-company"), "openclaw", "workspace");
+}
+
+function ellipsize(text: string, maxChars: number): string {
+  const compact = text.replace(/\s+/g, " ").trim();
+  if (compact.length <= maxChars) {
+    return compact;
+  }
+  return `${compact.slice(0, Math.max(1, maxChars - 1))}...`;
+}
+
+function humanizeDateKey(dateKey: string): string {
+  const [, month, day] = dateKey.split("-");
+  return `${Number(month)}月${Number(day)}日`;
 }
 
 function resolveOpenclawRoot(): string {
@@ -524,6 +547,70 @@ export class WechatLoveNoteService {
       .filter(Boolean);
   }
 
+  private existingDeferredNote(dateKey: string): StoredLoveNoteRow | undefined {
+    return this.store.get<StoredLoveNoteRow>(
+      `
+      SELECT id, note_date, scheduled_for, status, content, to_recipient, created_at
+      FROM love_note_deliveries
+      WHERE note_date = ? AND target_id = ? AND status = 'stale_target'
+      ORDER BY created_at DESC
+      LIMIT 1
+      `,
+      [dateKey, this.config.targetId],
+    );
+  }
+
+  private pendingCatchupNotes(limit: number): StoredLoveNoteRow[] {
+    return this.store.all<StoredLoveNoteRow>(
+      `
+      SELECT id, note_date, scheduled_for, status, content, to_recipient, created_at
+      FROM love_note_deliveries
+      WHERE target_id = ? AND status = 'stale_target' AND content IS NOT NULL
+      ORDER BY note_date ASC, created_at ASC
+      LIMIT ?
+      `,
+      [this.config.targetId, limit],
+    );
+  }
+
+  private buildCatchupMessage(rows: StoredLoveNoteRow[]): DigestMessage | undefined {
+    if (rows.length === 0) {
+      return undefined;
+    }
+    const lines = rows
+      .slice(0, 4)
+      .map((row) => `- ${humanizeDateKey(row.note_date)}：${ellipsize(String(row.content ?? ""), 48)}`)
+      .filter(Boolean);
+    if (lines.length === 0) {
+      return undefined;
+    }
+    const remaining = rows.length - lines.length;
+    const tail = remaining > 0 ? `\n\n另外还有 ${remaining} 张小纸条，等通道稳定后我会继续慢慢补上。` : "";
+    return {
+      kind: "overview",
+      title: "小熊的小纸条合集 🐻",
+      body: `前几天有些小纸条没能准时送到，我先把它们轻轻补成一封合集：\n${lines.join("\n")}${tail}`,
+    };
+  }
+
+  private markRowsSent(ids: string[], recipient: string): void {
+    if (ids.length === 0) {
+      return;
+    }
+    const placeholders = ids.map(() => "?").join(", ");
+    this.store.run(
+      `
+      UPDATE love_note_deliveries
+      SET status = 'sent',
+          to_recipient = ?,
+          sent_at = ?,
+          error = NULL
+      WHERE id IN (${placeholders})
+      `,
+      [recipient, nowIso(), ...ids],
+    );
+  }
+
   async run(params: RunParams = {}): Promise<LoveNoteRunResult> {
     const dateKey = params.date ?? toDateKey(new Date());
     const scheduledMinute = computeDailyScheduledMinute(dateKey, this.config);
@@ -538,87 +625,122 @@ export class WechatLoveNoteService {
     }
 
     const now = new Date();
-    if (!params.force && toDateKey(now) === dateKey && localMinutesNow(now) < scheduledMinute) {
+    const target = this.getTarget();
+    const lastActiveAt = resolveRecipientLastActiveAt(target);
+    const maxStalenessMs = this.config.maxRecipientStalenessHours * 60 * 60 * 1000;
+    const laneIsFresh =
+      !!lastActiveAt && now.getTime() - new Date(lastActiveAt).getTime() <= maxStalenessMs;
+    const pendingCatchup = laneIsFresh ? this.pendingCatchupNotes(8) : [];
+    if (!params.force && toDateKey(now) === dateKey && localMinutesNow(now) < scheduledMinute && pendingCatchup.length === 0) {
       return { date: dateKey, targetId: this.config.targetId, status: "not_due", scheduledFor, sentCount: 0 };
     }
 
-    const target = this.getTarget();
-    const lastActiveAt = resolveRecipientLastActiveAt(target);
-    if (!lastActiveAt) {
-      const message = `Target lane ${this.config.targetId} has no recent direct session metadata. Ask the recipient to send one fresh message first.`;
-      this.store.run(
-        `
-        INSERT INTO love_note_deliveries (
-          id, note_date, target_id, scheduled_for, status, content, to_recipient, created_at, sent_at, error
-        ) VALUES (?, ?, ?, ?, 'stale_target', NULL, NULL, ?, NULL, ?)
-        `,
-        [crypto.randomUUID(), dateKey, this.config.targetId, scheduledFor, nowIso(), message],
-      );
-      return this.staleTargetError(dateKey, scheduledFor, message);
-    }
-
-    const stalenessMs = now.getTime() - new Date(lastActiveAt).getTime();
-    const maxStalenessMs = this.config.maxRecipientStalenessHours * 60 * 60 * 1000;
-    if (stalenessMs > maxStalenessMs) {
-      const message = `Target lane ${this.config.targetId} is stale. Last direct activity was ${lastActiveAt}. Ask the recipient to send one fresh message first.`;
-      this.store.run(
-        `
-        INSERT INTO love_note_deliveries (
-          id, note_date, target_id, scheduled_for, status, content, to_recipient, created_at, sent_at, error
-        ) VALUES (?, ?, ?, ?, 'stale_target', NULL, NULL, ?, NULL, ?)
-        `,
-        [crypto.randomUUID(), dateKey, this.config.targetId, scheduledFor, nowIso(), message],
-      );
-      return this.staleTargetError(dateKey, scheduledFor, message);
-    }
-
     const workspace = loadWorkspaceContext(dateKey);
-    const content = await generateLoveNoteText({
-      store: this.store,
-      config: this.config,
-      dateKey,
-      scheduledMinute,
-      recentNotes: this.recentNotes(5),
-      dailySignals: extractSoftDailySignals(workspace.dailyText),
-      workspace,
-    });
+    const existingDeferred = this.existingDeferredNote(dateKey);
+    const content =
+      existingDeferred?.content?.trim() ||
+      (await generateLoveNoteText({
+        store: this.store,
+        config: this.config,
+        dateKey,
+        scheduledMinute,
+        recentNotes: this.recentNotes(5),
+        dailySignals: extractSoftDailySignals(workspace.dailyText),
+        workspace,
+      }));
+
+    if (!laneIsFresh) {
+      const message = lastActiveAt
+        ? `Target lane ${this.config.targetId} is stale. Last direct activity was ${lastActiveAt}. Ask the recipient to send one fresh message first.`
+        : `Target lane ${this.config.targetId} has no recent direct session metadata. Ask the recipient to send one fresh message first.`;
+      if (!existingDeferred) {
+        this.store.run(
+          `
+          INSERT INTO love_note_deliveries (
+            id, note_date, target_id, scheduled_for, status, content, to_recipient, created_at, sent_at, error
+          ) VALUES (?, ?, ?, ?, 'stale_target', ?, NULL, ?, NULL, ?)
+          `,
+          [crypto.randomUUID(), dateKey, this.config.targetId, scheduledFor, content, nowIso(), message],
+        );
+      } else {
+        this.store.run(
+          `
+          UPDATE love_note_deliveries
+          SET content = ?, error = ?
+          WHERE id = ?
+          `,
+          [content, message, existingDeferred.id],
+        );
+      }
+      return this.staleTargetError(dateKey, scheduledFor, message);
+    }
 
     if (params.dryRun) {
+      const catchupMessage = this.buildCatchupMessage(pendingCatchup);
       return {
         date: dateKey,
         targetId: this.config.targetId,
         status: "dry_run",
         scheduledFor,
-        content,
+        content: catchupMessage ? `${catchupMessage.body}\n\n---\n\n${content}` : content,
         sentCount: 0,
       };
     }
 
-    const deliveryId = crypto.randomUUID();
+    const deliveryId = existingDeferred?.id ?? crypto.randomUUID();
     const createdAt = nowIso();
-    this.store.run(
-      `
-      INSERT INTO love_note_deliveries (
-        id, note_date, target_id, scheduled_for, status, content, to_recipient, created_at, sent_at, error
-      ) VALUES (?, ?, ?, ?, 'pending', ?, NULL, ?, NULL, NULL)
-      `,
-      [deliveryId, dateKey, this.config.targetId, scheduledFor, content, createdAt],
-    );
+    if (!existingDeferred) {
+      this.store.run(
+        `
+        INSERT INTO love_note_deliveries (
+          id, note_date, target_id, scheduled_for, status, content, to_recipient, created_at, sent_at, error
+        ) VALUES (?, ?, ?, ?, 'pending', ?, NULL, ?, NULL, NULL)
+        `,
+        [deliveryId, dateKey, this.config.targetId, scheduledFor, content, createdAt],
+      );
+    } else {
+      this.store.run(
+        `
+        UPDATE love_note_deliveries
+        SET status = 'pending',
+            content = ?,
+            error = NULL
+        WHERE id = ?
+        `,
+        [content, deliveryId],
+      );
+    }
+
+    const catchupRows = pendingCatchup.filter((row) => row.id !== deliveryId);
+    const catchupMessage = this.buildCatchupMessage(catchupRows);
+    const messages: DigestMessage[] = [];
+    if (catchupMessage) {
+      messages.push(catchupMessage);
+    }
+    messages.push({
+      kind: "overview",
+      title: "小熊的小纸条 🐻",
+      body: content,
+    });
 
     try {
       const delivery = await sendDigestMessages({
         wrapperPath: process.env.OPENCLAW_CLI_WRAPPER ?? "",
         target,
-        messages: [
+        messages, /*
           {
             kind: "overview",
             title: "小熊的小纸条 🐻",
             body: content,
           } satisfies DigestMessage,
-        ],
+        ], */
         wechatConfig: this.loaded.rules.delivery?.wechat,
       });
 
+      this.markRowsSent(
+        catchupRows.map((row) => row.id),
+        delivery.recipient,
+      );
       this.store.run(
         `
         UPDATE love_note_deliveries
