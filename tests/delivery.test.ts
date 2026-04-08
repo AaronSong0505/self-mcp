@@ -189,6 +189,49 @@ describe("delivery recipient resolution", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it("normalizes WeChat bracket emoticon aliases before direct delivery", async () => {
+    const openclawRoot = createTempOpenClawRoot();
+    const wrapperPath = path.join(openclawRoot, "scripts", "openclaw.ps1");
+    seedWechatRuntime(openclawRoot);
+
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const rawBody = String(init?.body ?? "");
+      const parsed = JSON.parse(rawBody) as {
+        msg: { item_list: Array<{ text_item?: { text?: string } }> };
+      };
+      const text = String(parsed.msg.item_list[0]?.text_item?.text ?? "");
+      expect(text).toContain("🤦");
+      expect(text).not.toContain("[捂脸]");
+      expect(text).toContain("[MCP]");
+      return new Response('{"ret":0}', { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await sendDigestMessages({
+      wrapperPath,
+      target: {
+        channel: "openclaw-weixin",
+        accountId: "sample-account",
+        to: "o9cq80whdkdcefzaa0fjfapvjpc4@im.wechat",
+      },
+      messages: [
+        {
+          kind: "overview",
+          title: "emoji alias test",
+          body: "这次别再发 [捂脸] 了，[MCP] 这个词要保留。",
+        },
+      ],
+      wechatConfig: {
+        retryDelayMs: 0,
+        interMessageDelayMs: 0,
+        overviewDetailDelayMs: 0,
+      },
+    });
+
+    expect(result.sentCount).toBe(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("retries transient WeChat delivery failures before succeeding", async () => {
     const openclawRoot = createTempOpenClawRoot();
     const wrapperPath = path.join(openclawRoot, "scripts", "openclaw.ps1");

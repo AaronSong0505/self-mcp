@@ -4,12 +4,151 @@ import crypto from "node:crypto";
 import path from "node:path";
 import type { DeliveryTargetConfig, DigestMessage, WechatDeliveryConfig } from "./types.js";
 
+const WECHAT_EMOTICON_ALIAS_TO_EMOJI: Record<string, string> = {
+  "微笑": "🙂",
+  "呲牙": "😁",
+  "偷笑": "🤭",
+  "憨笑": "😃",
+  "嘿哈": "😆",
+  "捂脸": "🤦",
+  "流泪": "😢",
+  "大哭": "😭",
+  "尴尬": "😅",
+  "叹气": "😮‍💨",
+  "天啊": "😮",
+  "发呆": "😶",
+  "苦涩": "🥺",
+  "委屈": "🥺",
+  "亲亲": "😘",
+  "飞吻": "😘",
+  "爱心": "❤️",
+  "爱你": "🫶",
+  "心碎": "💔",
+  "拥抱": "🫂",
+  "抱拳": "🙏",
+  "合十": "🙏",
+  "强": "💪",
+  "弱": "👎",
+  "耶": "✌️",
+  "加油": "👍",
+  "握手": "🤝",
+  "好的": "👌",
+  "OK": "👌",
+  "机智": "😏",
+  "翻白眼": "🙄",
+  "疑问": "❓",
+  "让我看看": "🫣",
+  "吃瓜": "🍉",
+  "西瓜": "🍉",
+  "旺柴": "🐶",
+  "猪头": "🐷",
+  "玫瑰": "🌹",
+  "凋谢": "🥀",
+  "嘴唇": "💋",
+  "礼物": "🎁",
+  "蛋糕": "🎂",
+  "咖啡": "☕",
+  "太阳": "☀️",
+  "月亮": "🌙",
+  "便便": "💩",
+  "666": "🔥",
+};
+
+const WECHAT_EMOTICON_ALIASES = new Set<string>([
+  ...Object.keys(WECHAT_EMOTICON_ALIAS_TO_EMOJI),
+  "撇嘴",
+  "色",
+  "害羞",
+  "闭嘴",
+  "睡",
+  "发怒",
+  "调皮",
+  "惊讶",
+  "难过",
+  "酷",
+  "冷汗",
+  "抓狂",
+  "吐",
+  "傲慢",
+  "饥饿",
+  "困",
+  "惊恐",
+  "悠闲",
+  "奋斗",
+  "咒骂",
+  "晕",
+  "疯了",
+  "衰",
+  "骷髅",
+  "敲打",
+  "再见",
+  "擦汗",
+  "抠鼻",
+  "鼓掌",
+  "坏笑",
+  "左哼哼",
+  "右哼哼",
+  "哈欠",
+  "鄙视",
+  "快哭了",
+  "阴险",
+  "勾引",
+  "拳头",
+  "差劲",
+  "爱情",
+  "跳跳",
+  "发抖",
+  "怄火",
+  "转圈",
+  "磕头",
+  "回头",
+  "跳绳",
+  "挥手",
+  "激动",
+  "街舞",
+  "献吻",
+  "左太极",
+  "右太极",
+  "皱眉",
+  "社会社会",
+  "打脸",
+  "Emm",
+  "裂开",
+]);
+
+const WECHAT_BRACKET_EMOTICON_RE = /(\[([^[\]\n]{1,8})\]|【([^【】\n]{1,8})】)/g;
+
 const DEFAULT_WECHAT_DELIVERY_CONFIG: Required<WechatDeliveryConfig> = {
   maxAttempts: 3,
   retryDelayMs: 1200,
   interMessageDelayMs: 350,
   overviewDetailDelayMs: 1500,
 };
+
+function normalizeWechatPlainText(text: string): string {
+  const replaced = text.replace(
+    WECHAT_BRACKET_EMOTICON_RE,
+    (raw: string, _whole: string, asciiInner?: string, fullWidthInner?: string) => {
+      const inner = (asciiInner ?? fullWidthInner ?? "").trim();
+      if (!inner) {
+        return "";
+      }
+      const mapped = WECHAT_EMOTICON_ALIAS_TO_EMOJI[inner];
+      if (mapped) {
+        return mapped;
+      }
+      if (WECHAT_EMOTICON_ALIASES.has(inner)) {
+        return "";
+      }
+      return raw;
+    },
+  );
+  return replaced
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
 
 function resolveWrapperWorkdir(wrapperPath: string): string {
   return path.dirname(path.dirname(wrapperPath));
@@ -213,6 +352,7 @@ function resolveWechatContextToken(
 }
 
 function buildWechatTextBody(recipient: string, text: string, contextToken: string, channelVersion: string): string {
+  const normalizedText = normalizeWechatPlainText(text);
   return JSON.stringify({
     msg: {
       from_user_id: "",
@@ -220,7 +360,7 @@ function buildWechatTextBody(recipient: string, text: string, contextToken: stri
       client_id: `self-mcp-${Date.now()}-${crypto.randomUUID()}`,
       message_type: 2,
       message_state: 2,
-      item_list: [{ type: 1, text_item: { text } }],
+      item_list: [{ type: 1, text_item: { text: normalizedText } }],
       context_token: contextToken,
     },
     base_info: {
@@ -387,7 +527,8 @@ function sendMessagesViaWrapper(params: {
   const { wrapperPath, target, messages, recipient } = params;
   let sentCount = 0;
   for (const message of messages) {
-    const text = formatDigestMessage(message);
+    const formattedText = formatDigestMessage(message);
+    const text = target.channel === "openclaw-weixin" ? normalizeWechatPlainText(formattedText) : formattedText;
     const args = [
       "-NoProfile",
       "-ExecutionPolicy",
