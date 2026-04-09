@@ -12,7 +12,7 @@ $ErrorActionPreference = "Stop"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $runner = Join-Path $scriptDir "run-wechat-digest.ps1"
 $morningTaskCommand = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$runner`" -Mode morning"
-$eveningTaskCommand = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$runner`" -Mode morning"
+$eveningTaskCommand = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$runner`" -Mode evening"
 $followupTaskCommand = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$runner`" -Mode followup"
 
 schtasks /Create /TN $MorningTaskName /SC DAILY /ST $MorningTime /TR $morningTaskCommand /F | Out-Null

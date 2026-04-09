@@ -312,4 +312,48 @@ describe("delivery recipient resolution", () => {
     expect(result.recipient).toBe("o9cq80whDkdcEfZaa0FJfapVjpc4@im.wechat");
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+
+  it("falls back to the OpenClaw wrapper when direct WeChat delivery hangs past the request timeout", async () => {
+    const openclawRoot = createTempOpenClawRoot();
+    const wrapperPath = path.join(openclawRoot, "scripts", "openclaw.ps1");
+    seedWechatRuntime(openclawRoot);
+
+    const fetchMock = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          const error = new Error("aborted");
+          error.name = "AbortError";
+          reject(error);
+        });
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await sendDigestMessages({
+      wrapperPath,
+      target: {
+        channel: "openclaw-weixin",
+        accountId: "sample-account",
+        to: "o9cq80whdkdcefzaa0fjfapvjpc4@im.wechat",
+      },
+      messages: [
+        {
+          kind: "overview",
+          title: "timeout test title",
+          body: "timeout test body",
+        },
+      ],
+      wechatConfig: {
+        maxAttempts: 1,
+        retryDelayMs: 0,
+        interMessageDelayMs: 0,
+        overviewDetailDelayMs: 0,
+        requestTimeoutMs: 10,
+      },
+    });
+
+    expect(result.sentCount).toBe(1);
+    expect(result.recipient).toBe("o9cq80whDkdcEfZaa0FJfapVjpc4@im.wechat");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
 });

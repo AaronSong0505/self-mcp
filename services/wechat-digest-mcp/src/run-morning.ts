@@ -44,7 +44,10 @@ async function main() {
   const maxAnalyzePerRun = Math.max(1, loaded.rules.analysis?.maxAnalyzePerRun ?? 6);
   const scan = await service.scan();
   const newIds = scan.articles.filter((article) => article.status === "new").map((article) => article.articleId);
-  const analyzed = await service.analyze({ limit: maxAnalyzePerRun });
+  const analyzed = await service.analyze({
+    limit: maxAnalyzePerRun,
+    browserFallback: false,
+  });
   const digest = await service.buildDigest({
     date: args.date ?? toDateKey(new Date()),
     targetId: args.targetId,

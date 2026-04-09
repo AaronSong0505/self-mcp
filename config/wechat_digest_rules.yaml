@@ -4,8 +4,8 @@ analysis:
   visionModel: qwen3.5-plus
   maxImages: 2
   summaryMaxChars: 220
-  requestTimeoutMs: 45000
-  maxAnalyzePerRun: 6
+  requestTimeoutMs: 30000
+  maxAnalyzePerRun: 2
 
 delivery:
   wechat:
@@ -13,6 +13,7 @@ delivery:
     retryDelayMs: 1200
     interMessageDelayMs: 350
     overviewDetailDelayMs: 1500
+    requestTimeoutMs: 30000
 
 interests:
   objective: >

@@ -1,5 +1,5 @@
 param(
-  [ValidateSet("morning", "followup")]
+  [ValidateSet("morning", "evening", "followup")]
   [string]$Mode = "morning",
   [string]$Date,
   [string]$Target = "aaron-wechat",
@@ -34,7 +34,27 @@ if (Test-Path $envFile) {
 [System.Environment]::SetEnvironmentVariable("WECHAT_DIGEST_OPENAI_BASE_URL", "https://coding.dashscope.aliyuncs.com/v1", "Process")
 [System.Environment]::SetEnvironmentVariable("OPENCLAW_CLI_WRAPPER", (Join-Path $openclawRoot "scripts\\openclaw.ps1"), "Process")
 
-$node = "node"
+function Resolve-NodeExe {
+  $command = Get-Command node -ErrorAction SilentlyContinue
+  if ($command -and $command.Source) {
+    return $command.Source
+  }
+
+  $candidates = @(
+    "C:\\Program Files\\nodejs\\node.exe",
+    "C:\\Program Files (x86)\\nodejs\\node.exe"
+  )
+
+  foreach ($candidate in $candidates) {
+    if (Test-Path $candidate) {
+      return $candidate
+    }
+  }
+
+  throw "Unable to locate node.exe for wechat digest runner."
+}
+
+$node = Resolve-NodeExe
 $entryName = if ($Mode -eq "followup") { "run-followup.js" } else { "run-morning.js" }
 $entry = Join-Path $rootDir "dist\\services\\wechat-digest-mcp\\src\\$entryName"
 $args = @($entry, "--target", $Target)

@@ -143,6 +143,7 @@ describe("digest build", () => {
     writeConfig(root);
     const service = await createService(root);
     const store = (service as unknown as { store: { run: (sql: string, params?: unknown[]) => void } }).store;
+    const currentIso = new Date().toISOString();
 
     store.run(
       `
@@ -189,7 +190,7 @@ describe("digest build", () => {
         "overview",
         1,
         "pending",
-        "2026-04-03T08:45:00.000Z",
+        currentIso,
       ],
     );
 
@@ -199,5 +200,33 @@ describe("digest build", () => {
     expect(status.queuedCandidates).toBe(1);
     expect(status.pendingDelivery).toBe(1);
     expect(status.latestDigestStatus).toBe("pending");
+  });
+
+  it("reconciles stale pending digests into failed status", async () => {
+    const root = createTempRoot();
+    writeConfig(root);
+    const service = await createService(root);
+    const store = (service as unknown as { store: { run: (sql: string, params?: unknown[]) => void } }).store;
+
+    store.run(
+      `
+      INSERT INTO digests (id, digest_date, target_id, overview_text, detail_count, status, created_at, sent_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
+      `,
+      [
+        "digest-stale-pending",
+        "2026-04-03",
+        "aaron-wechat",
+        "overview",
+        2,
+        "pending",
+        "2026-04-03T08:45:00.000Z",
+      ],
+    );
+
+    const status = await service.status({ date: "2026-04-03" });
+
+    expect(status.pendingDelivery).toBe(0);
+    expect(status.latestDigestStatus).toBe("failed");
   });
 });

@@ -41,6 +41,7 @@ type AnalyzeParams = {
   articleIds?: string[];
   urls?: string[];
   limit?: number;
+  browserFallback?: boolean;
 };
 
 type BuildParams = {
@@ -175,6 +176,8 @@ function truncate(text: string, maxChars: number): string {
   return `${text.slice(0, maxChars - 1)}…`;
 }
 
+const STALE_PENDING_DIGEST_MINUTES = 45;
+
 export class WechatDigestService {
   private loaded = loadServiceConfig();
   private constructor(private readonly store: SqliteStateStore) {
@@ -184,7 +187,9 @@ export class WechatDigestService {
   static async create(): Promise<WechatDigestService> {
     const loaded = loadServiceConfig();
     const store = await SqliteStateStore.open(loaded.paths.stateFile);
-    return new WechatDigestService(store);
+    const service = new WechatDigestService(store);
+    service.reconcileStalePendingDigests();
+    return service;
   }
 
   private reloadConfig() {
@@ -215,6 +220,48 @@ export class WechatDigestService {
           timestamp,
         ],
       );
+    }
+  }
+
+  private reconcileStalePendingDigests() {
+    const cutoff = new Date(Date.now() - STALE_PENDING_DIGEST_MINUTES * 60 * 1000).toISOString();
+    const staleDigests = this.store.all<{ id: string }>(
+      `
+      SELECT id
+      FROM digests
+      WHERE status = 'pending'
+        AND created_at <= ?
+      `,
+      [cutoff],
+    );
+
+    for (const digest of staleDigests) {
+      const deliveryState = this.store.get<{
+        delivery_count: number;
+        sent_count: number;
+        latest_sent_at: string | null;
+      }>(
+        `
+        SELECT
+          COUNT(*) AS delivery_count,
+          SUM(CASE WHEN status = 'sent' THEN 1 ELSE 0 END) AS sent_count,
+          MAX(sent_at) AS latest_sent_at
+        FROM deliveries
+        WHERE digest_id = ?
+        `,
+        [digest.id],
+      );
+
+      const deliveryCount = Number(deliveryState?.delivery_count ?? 0);
+      const sentCount = Number(deliveryState?.sent_count ?? 0);
+      const latestSentAt = deliveryState?.latest_sent_at ?? null;
+
+      if (deliveryCount > 0 && sentCount === deliveryCount && latestSentAt) {
+        this.store.run("UPDATE digests SET status = 'sent', sent_at = ? WHERE id = ?", [latestSentAt, digest.id]);
+        continue;
+      }
+
+      this.store.run("UPDATE digests SET status = 'failed' WHERE id = ?", [digest.id]);
     }
   }
 
@@ -793,10 +840,11 @@ export class WechatDigestService {
 
     const rows = this.getArticlesForAnalysis(ids.length > 0 ? ids : undefined, params.limit);
     const outputs: AnalyzeOutput[] = [];
+    const useBrowserFallback = params.browserFallback ?? true;
 
     for (const row of rows) {
       try {
-        const extracted: ExtractedArticle = await extractArticle(row.article_url, { browserFallback: true });
+        const extracted: ExtractedArticle = await extractArticle(row.article_url, { browserFallback: useBrowserFallback });
         const analysis = await analyzeArticle({
           article: extracted,
           rules: this.loaded.rules,
@@ -1020,40 +1068,46 @@ export class WechatDigestService {
     messages: DigestMessage[];
     resolveArticleId: (message: DigestMessage) => string | null;
   }): Promise<number> {
-    const delivery = await sendDigestMessages({
-      wrapperPath: process.env.OPENCLAW_CLI_WRAPPER ?? "",
-      target: params.target,
-      messages: params.messages,
-      wechatConfig: this.loaded.rules.delivery?.wechat,
-    });
+    try {
+      const delivery = await sendDigestMessages({
+        wrapperPath: process.env.OPENCLAW_CLI_WRAPPER ?? "",
+        target: params.target,
+        messages: params.messages,
+        wechatConfig: this.loaded.rules.delivery?.wechat,
+      });
 
-    params.messages.forEach((message, index) => {
-      this.store.run(
-        `
-        INSERT INTO deliveries (
-          id, digest_id, article_id, target_id, channel, account_id, to_recipient,
-          message_index, status, sent_at, error
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'sent', ?, NULL)
-        `,
-        [
-          crypto.randomUUID(),
-          params.digestId,
-          params.resolveArticleId(message),
-          params.targetId,
-          params.target.channel,
-          params.target.accountId ?? null,
-          delivery.recipient,
-          index,
-          nowIso(),
-        ],
-      );
-    });
+      params.messages.forEach((message, index) => {
+        this.store.run(
+          `
+          INSERT INTO deliveries (
+            id, digest_id, article_id, target_id, channel, account_id, to_recipient,
+            message_index, status, sent_at, error
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'sent', ?, NULL)
+          `,
+          [
+            crypto.randomUUID(),
+            params.digestId,
+            params.resolveArticleId(message),
+            params.targetId,
+            params.target.channel,
+            params.target.accountId ?? null,
+            delivery.recipient,
+            index,
+            nowIso(),
+          ],
+        );
+      });
 
-    this.store.run("UPDATE digests SET status = 'sent', sent_at = ? WHERE id = ?", [nowIso(), params.digestId]);
-    return delivery.sentCount;
+      this.store.run("UPDATE digests SET status = 'sent', sent_at = ? WHERE id = ?", [nowIso(), params.digestId]);
+      return delivery.sentCount;
+    } catch (error) {
+      this.store.run("UPDATE digests SET status = 'failed' WHERE id = ?", [params.digestId]);
+      throw error;
+    }
   }
 
   async buildDigest(params: BuildParams = {}): Promise<BuildDigestOutput> {
+    this.reconcileStalePendingDigests();
     const digestDate = params.date ?? toDateKey(new Date());
     const digestTargetId = params.targetId ?? "aaron-wechat";
     const digestDryRun = params.dryRun ?? false;
@@ -1480,6 +1534,7 @@ export class WechatDigestService {
   }
 
   async status(params: StatusParams = {}): Promise<StatusOutput> {
+    this.reconcileStalePendingDigests();
     this.ensureLearningStatusesCurrent();
     const statusDate = params.date ?? toDateKey(new Date());
     const statusTargetId = params.targetId ?? "aaron-wechat";
@@ -1557,10 +1612,7 @@ export class WechatDigestService {
       digestEligible: statusDigestEligible,
       delivered: statusDelivered,
       queuedCandidates: statusQueuedCandidates,
-      pendingDelivery:
-        latestDigest?.status && latestDigest.status !== "sent"
-          ? Math.max(Number(latestDigest.detail_count ?? 0), 0)
-          : 0,
+      pendingDelivery: latestDigest?.status === "pending" ? Math.max(Number(latestDigest.detail_count ?? 0), 0) : 0,
       latestDigestStatus: latestDigest?.status ?? "none",
       pendingLearning: statusPendingLearning,
     };

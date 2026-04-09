@@ -32,6 +32,27 @@ if (Test-Path $envFile) {
 [System.Environment]::SetEnvironmentVariable("WECHAT_DIGEST_OPENAI_BASE_URL", "https://coding.dashscope.aliyuncs.com/v1", "Process")
 [System.Environment]::SetEnvironmentVariable("OPENCLAW_CLI_WRAPPER", (Join-Path $openclawRoot "scripts\\openclaw.ps1"), "Process")
 
+function Resolve-NodeExe {
+  $command = Get-Command node -ErrorAction SilentlyContinue
+  if ($command -and $command.Source) {
+    return $command.Source
+  }
+
+  $candidates = @(
+    "C:\\Program Files\\nodejs\\node.exe",
+    "C:\\Program Files (x86)\\nodejs\\node.exe"
+  )
+
+  foreach ($candidate in $candidates) {
+    if (Test-Path $candidate) {
+      return $candidate
+    }
+  }
+
+  throw "Unable to locate node.exe for wechat love-note runner."
+}
+
+$node = Resolve-NodeExe
 $entry = Join-Path $rootDir "dist\\services\\wechat-love-note\\src\\run-love-note.js"
 $args = @($entry)
 if ($Date) {
@@ -44,7 +65,7 @@ if ($Force) {
   $args += "--force"
 }
 
-& node @args
+& $node @args
 if ($LASTEXITCODE -ne 0) {
   exit $LASTEXITCODE
 }

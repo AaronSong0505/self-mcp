@@ -41,6 +41,7 @@ export type WechatDeliveryConfig = {
   retryDelayMs?: number;
   interMessageDelayMs?: number;
   overviewDetailDelayMs?: number;
+  requestTimeoutMs?: number;
 };
 
 export type LearningCandidateType = "company" | "technology" | "theme";

@@ -123,6 +123,7 @@ const DEFAULT_WECHAT_DELIVERY_CONFIG: Required<WechatDeliveryConfig> = {
   retryDelayMs: 1200,
   interMessageDelayMs: 350,
   overviewDetailDelayMs: 1500,
+  requestTimeoutMs: 30000,
 };
 
 function normalizeWechatPlainText(text: string): string {
@@ -248,6 +249,10 @@ function normalizeWechatDeliveryConfig(config?: WechatDeliveryConfig): Required<
     overviewDetailDelayMs: Math.max(
       0,
       Math.trunc(config?.overviewDetailDelayMs ?? DEFAULT_WECHAT_DELIVERY_CONFIG.overviewDetailDelayMs),
+    ),
+    requestTimeoutMs: Math.max(
+      1000,
+      Math.trunc(config?.requestTimeoutMs ?? DEFAULT_WECHAT_DELIVERY_CONFIG.requestTimeoutMs),
     ),
   };
 }
@@ -436,30 +441,42 @@ async function postWechatText(params: {
   const { account, headersBase, recipient, text, contextToken, channelVersion, config } = params;
   let lastError: Error | undefined;
 
-  for (let attempt = 1; attempt <= config.maxAttempts; attempt += 1) {
-    try {
-      const body = buildWechatTextBody(recipient, text, contextToken, channelVersion);
-      const response = await fetch(new URL("ilink/bot/sendmessage", ensureTrailingSlash(account.baseUrl)), {
-        method: "POST",
-        headers: {
-          ...headersBase,
-          "Content-Length": String(Buffer.byteLength(body, "utf8")),
-          "X-WECHAT-UIN": randomWechatUin(),
-        },
-        body,
-      });
-      const rawText = await response.text();
-      if (!response.ok) {
-        throw new Error(`Direct Weixin send failed (${response.status}): ${rawText}`);
+    for (let attempt = 1; attempt <= config.maxAttempts; attempt += 1) {
+      try {
+        const body = buildWechatTextBody(recipient, text, contextToken, channelVersion);
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), config.requestTimeoutMs);
+        let response: Response;
+        try {
+          response = await fetch(new URL("ilink/bot/sendmessage", ensureTrailingSlash(account.baseUrl)), {
+            method: "POST",
+            headers: {
+              ...headersBase,
+              "Content-Length": String(Buffer.byteLength(body, "utf8")),
+              "X-WECHAT-UIN": randomWechatUin(),
+            },
+            body,
+            signal: controller.signal,
+          });
+        } finally {
+          clearTimeout(timeout);
+        }
+        const rawText = await response.text();
+        if (!response.ok) {
+          throw new Error(`Direct Weixin send failed (${response.status}): ${rawText}`);
+        }
+        assertWechatBusinessSuccess(rawText);
+        return;
+      } catch (error) {
+        if (error instanceof Error && error.name === "AbortError") {
+          lastError = new Error(`Direct Weixin send timed out after ${config.requestTimeoutMs}ms`);
+        } else {
+          lastError = error instanceof Error ? error : new Error(String(error));
+        }
+        if (attempt < config.maxAttempts) {
+          await sleep(config.retryDelayMs * attempt);
+        }
       }
-      assertWechatBusinessSuccess(rawText);
-      return;
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error(String(error));
-      if (attempt < config.maxAttempts) {
-        await sleep(config.retryDelayMs * attempt);
-      }
-    }
   }
 
   throw lastError ?? new Error("Direct Weixin send failed.");
