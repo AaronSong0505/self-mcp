@@ -201,6 +201,10 @@ function normalizeLineEndings(value: string) {
   return value.replace(/\r\n/g, "\n");
 }
 
+function normalizeVariantLabel(value?: string) {
+  return (value ?? "B").trim().replace(/^draft\s+/i, "").toUpperCase();
+}
+
 function parseItemField(block: string, label: string) {
   const pattern = new RegExp(`^- ${label}:\\s*(.*)$`, "m");
   return block.match(pattern)?.[1]?.trim() ?? "";
@@ -397,8 +401,9 @@ export class SocialOutboxService {
     variant = "B",
   ): Promise<ReviewPacket & { chosenVariant: string; preview: BlueskyPreviewResult }> {
     const packet = this.getReviewPacket(id);
+    const targetVariant = normalizeVariantLabel(variant);
     const chosen =
-      packet.variants.find((candidate) => candidate.label === variant) ?? packet.variants[0];
+      packet.variants.find((candidate) => candidate.label === targetVariant) ?? packet.variants[0];
     if (!chosen) {
       throw new Error(`No draft variants found for ${id}.`);
     }
@@ -421,8 +426,9 @@ export class SocialOutboxService {
     dryRun?: boolean;
   }): Promise<ReviewPacket & { chosenVariant: string; publish: BlueskyPublishResult; outboxItem: OutboxItem }> {
     const packet = this.getReviewPacket(params.id);
+    const targetVariant = normalizeVariantLabel(params.variant);
     const chosen =
-      packet.variants.find((candidate) => candidate.label === (params.variant ?? "B")) ??
+      packet.variants.find((candidate) => candidate.label === targetVariant) ??
       packet.variants[0];
     if (!chosen) {
       throw new Error(`No draft variants found for ${params.id}.`);

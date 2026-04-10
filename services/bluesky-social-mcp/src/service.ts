@@ -150,19 +150,72 @@ function buildFetchWithOptionalProxy(proxyUrl?: string): typeof globalThis.fetch
   return proxiedFetch;
 }
 
+function isProxyConnectionRefused(error: unknown): boolean {
+  const message = error instanceof Error ? `${error.message}\n${error.stack ?? ""}` : String(error);
+  return /ECONNREFUSED\s+127\.0\.0\.1:\d+/i.test(message);
+}
+
+function isReachabilityError(error: unknown): boolean {
+  const message = error instanceof Error ? `${error.message}\n${error.stack ?? ""}` : String(error);
+  return /(fetch failed|Connect Timeout|ETIMEDOUT|ENETUNREACH|EHOSTUNREACH|ECONNRESET|socket hang up)/i.test(message);
+}
+
+function summarizeConnectionError(error: unknown, config: RuntimeConfig): Error {
+  if (error instanceof Error && error.message === "Bluesky credentials are not configured.") {
+    return error;
+  }
+  if (config.proxyUrl && isProxyConnectionRefused(error)) {
+    return new Error(`Bluesky proxy is unreachable at ${config.proxyUrl}.`);
+  }
+  if (isReachabilityError(error)) {
+    return new Error("Cannot reach Bluesky right now (network unavailable).");
+  }
+  return error instanceof Error ? error : new Error(String(error));
+}
+
+async function attemptAuthenticatedAgent(
+  serviceUrl: string,
+  identifier: string,
+  appPassword: string,
+  proxyUrl?: string,
+): Promise<AtpAgent> {
+  const agent = new AtpAgent({
+    service: serviceUrl,
+    ...(proxyUrl ? { fetch: buildFetchWithOptionalProxy(proxyUrl) } : {}),
+  });
+  await agent.login({
+    identifier,
+    password: appPassword,
+  });
+  return agent;
+}
+
 async function createAuthenticatedAgent(config: RuntimeConfig): Promise<AtpAgent> {
   if (!config.identifier || !config.appPassword) {
     throw new Error("Bluesky credentials are not configured.");
   }
-  const agent = new AtpAgent({
-    service: config.serviceUrl,
-    ...(config.proxyUrl ? { fetch: buildFetchWithOptionalProxy(config.proxyUrl) } : {}),
-  });
-  await agent.login({
-    identifier: config.identifier,
-    password: config.appPassword,
-  });
-  return agent;
+  try {
+    return await attemptAuthenticatedAgent(
+      config.serviceUrl,
+      config.identifier,
+      config.appPassword,
+      config.proxyUrl,
+    );
+  } catch (error) {
+    if (config.proxyUrl && isProxyConnectionRefused(error)) {
+      try {
+        return await attemptAuthenticatedAgent(
+          config.serviceUrl,
+          config.identifier,
+          config.appPassword,
+          undefined,
+        );
+      } catch (directError) {
+        throw summarizeConnectionError(directError, config);
+      }
+    }
+    throw summarizeConnectionError(error, config);
+  }
 }
 
 function normalizeLanguages(input: string[] | undefined, fallback: string[]): string[] {
