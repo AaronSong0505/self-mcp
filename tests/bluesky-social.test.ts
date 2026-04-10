@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { BlueskySocialService } from "../services/bluesky-social-mcp/src/service.js";
+import { BlueskySocialService, resolveProxyUrlFromEnv } from "../services/bluesky-social-mcp/src/service.js";
 
 const originalEnv = { ...process.env };
 
@@ -32,5 +32,14 @@ describe("Bluesky social service", () => {
     expect(result.graphemeLength).toBeGreaterThan(0);
     expect(result.maxGraphemes).toBe(300);
     expect(result.langs).toEqual(["zh-Hans"]);
+  });
+
+  it("prefers a dedicated Bluesky proxy url over generic proxy env vars", () => {
+    const proxyUrl = resolveProxyUrlFromEnv({
+      BLUESKY_PROXY_URL: "socks5h://127.0.0.1:40008",
+      ALL_PROXY: "http://127.0.0.1:7890",
+    } as NodeJS.ProcessEnv);
+
+    expect(proxyUrl).toBe("socks5h://127.0.0.1:40008");
   });
 });

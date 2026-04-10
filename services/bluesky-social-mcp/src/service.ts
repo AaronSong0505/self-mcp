@@ -1,7 +1,12 @@
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import YAML from "yaml";
 import { AtpAgent, RichText } from "@atproto/api";
+
+const require = createRequire(import.meta.url);
+const nodeFetch = require("node-fetch").default as typeof globalThis.fetch;
+const SocksProxyAgent = require("socks-proxy-agent").SocksProxyAgent as new (uri: string) => unknown;
 
 type BlueskyConfigDoc = {
   enabled?: boolean;
@@ -53,6 +58,7 @@ type RuntimeConfig = {
   activeChannelLabel: string;
   identifier?: string;
   appPassword?: string;
+  proxyUrl?: string;
 };
 
 const DEFAULT_MAX_GRAPHEMES = 300;
@@ -85,14 +91,73 @@ function loadRuntimeConfig(): RuntimeConfig {
     activeChannelLabel: doc.activeChannelLabel?.trim() || "Bluesky",
     identifier: process.env.BLUESKY_HANDLE?.trim(),
     appPassword: process.env.BLUESKY_APP_PASSWORD?.trim(),
+    proxyUrl: resolveProxyUrlFromEnv(),
   };
+}
+
+export function resolveProxyUrlFromEnv(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const candidates = [
+    env.BLUESKY_PROXY_URL,
+    env.ALL_PROXY,
+    env.all_proxy,
+    env.HTTPS_PROXY,
+    env.https_proxy,
+    env.HTTP_PROXY,
+    env.http_proxy,
+  ];
+  for (const value of candidates) {
+    const trimmed = value?.trim();
+    if (trimmed) {
+      return trimmed;
+    }
+  }
+  return undefined;
+}
+
+function buildFetchWithOptionalProxy(proxyUrl?: string): typeof globalThis.fetch | undefined {
+  if (!proxyUrl) {
+    return undefined;
+  }
+  if (!proxyUrl.startsWith("socks")) {
+    throw new Error(`Unsupported Bluesky proxy protocol: ${proxyUrl}`);
+  }
+  const agent = new SocksProxyAgent(proxyUrl);
+  const proxiedFetch: typeof globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    let url: string | URL = input as any;
+    let nextInit: Record<string, unknown> = { ...(init as any) };
+
+    if (typeof Request !== "undefined" && input instanceof Request) {
+      const method = init?.method ?? input.method;
+      const headers = Object.fromEntries(input.headers.entries());
+      const body =
+        method === "GET" || method === "HEAD" ? undefined : Buffer.from(await input.arrayBuffer());
+      url = input.url;
+      nextInit = {
+        method,
+        headers,
+        body,
+        redirect: init?.redirect ?? input.redirect,
+        signal: init?.signal ?? input.signal,
+        ...(init as any),
+      };
+    }
+
+    return (await nodeFetch(url as any, {
+      ...nextInit,
+      agent,
+    } as any)) as any;
+  };
+  return proxiedFetch;
 }
 
 async function createAuthenticatedAgent(config: RuntimeConfig): Promise<AtpAgent> {
   if (!config.identifier || !config.appPassword) {
     throw new Error("Bluesky credentials are not configured.");
   }
-  const agent = new AtpAgent({ service: config.serviceUrl });
+  const agent = new AtpAgent({
+    service: config.serviceUrl,
+    ...(config.proxyUrl ? { fetch: buildFetchWithOptionalProxy(config.proxyUrl) } : {}),
+  });
   await agent.login({
     identifier: config.identifier,
     password: config.appPassword,
