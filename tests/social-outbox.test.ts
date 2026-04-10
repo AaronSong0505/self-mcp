@@ -4,23 +4,56 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { SocialOutboxService } from "../services/social-outbox-mcp/src/service.js";
 
-function createTempOutboxPath() {
+function createTempPaths() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "social-outbox-"));
-  return path.join(root, "OUTBOX.md");
+  return {
+    outboxPath: path.join(root, "OUTBOX.md"),
+    draftsPath: path.join(root, "SOCIAL_DRAFTS.md"),
+  };
+}
+
+function writeDrafts(draftsPath: string) {
+  fs.writeFileSync(
+    draftsPath,
+    `# SOCIAL_DRAFTS.md
+
+## Current Draft Queue
+
+## OX-20260410-01 - Reliability before noise
+
+- Target channel: Aaron WeChat DM / Bluesky
+- Source: social observation / weekly review
+- Why it matters: first public review item
+
+### Draft A
+
+Plain English draft.
+
+### Draft B
+
+如果一个 AI 说“我发出去了”，对方却没收到，那不是小 bug，而是信任断点。
+
+### Draft C
+
+Alternate draft.
+`,
+    "utf8",
+  );
 }
 
 describe("social outbox service", () => {
   it("creates and lists a waiting review item", () => {
-    const outboxPath = createTempOutboxPath();
-    const service = new SocialOutboxService(outboxPath);
+    const { outboxPath, draftsPath } = createTempPaths();
+    writeDrafts(draftsPath);
+    const service = new SocialOutboxService(outboxPath, draftsPath);
 
     const item = service.upsertItem({
       id: "OX-20260410-01",
-      targetChannel: "Aaron WeChat DM",
-      audience: "owner review",
+      targetChannel: "Aaron WeChat DM / Bluesky",
+      audience: "owner review / public",
       intent: "review a short editorial take",
       source: "digest",
-      relatedDraft: "OX-20260410-01 - Qwen note",
+      relatedDraft: "OX-20260410-01 - Reliability before noise",
       status: "waiting_review",
       approval: "pending",
       delivery: "not started",
@@ -35,34 +68,82 @@ describe("social outbox service", () => {
     expect(fs.readFileSync(outboxPath, "utf8")).toContain("### Waiting Review");
   });
 
-  it("transitions an item to sent", () => {
-    const outboxPath = createTempOutboxPath();
-    const service = new SocialOutboxService(outboxPath);
+  it("loads review packet variants from SOCIAL_DRAFTS.md", () => {
+    const { outboxPath, draftsPath } = createTempPaths();
+    writeDrafts(draftsPath);
+    const service = new SocialOutboxService(outboxPath, draftsPath);
 
     service.upsertItem({
-      id: "OX-20260410-02",
-      targetChannel: "Bluesky",
-      audience: "public",
-      intent: "publish a short post",
-      source: "watchlist",
-      relatedDraft: "OX-20260410-02 - Bluesky post",
-      status: "approved",
-      approval: "approved by Aaron",
+      id: "OX-20260410-01",
+      targetChannel: "Aaron WeChat DM / Bluesky",
+      audience: "owner review / public",
+      intent: "review a short editorial take",
+      source: "digest",
+      relatedDraft: "OX-20260410-01 - Reliability before noise",
+      status: "waiting_review",
+      approval: "pending",
       delivery: "not started",
-      nextStep: "publish when channel is active",
+      nextStep: "show Aaron for review",
     });
 
-    const item = service.transitionItem({
-      id: "OX-20260410-02",
-      status: "sent",
-      delivery: "sent at 2026-04-10 10:30 Asia/Shanghai",
-      nextStep: "archive later",
+    const packet = service.getReviewPacket("OX-20260410-01");
+    expect(packet.draftTitle).toBe("Reliability before noise");
+    expect(packet.variants.map((variant) => variant.label)).toEqual(["A", "B", "C"]);
+    expect(packet.variants[1]?.text).toContain("信任断点");
+  });
+
+  it("publishes a chosen draft variant through the deterministic UTF-8 path", async () => {
+    const { outboxPath, draftsPath } = createTempPaths();
+    writeDrafts(draftsPath);
+    const mockBluesky = {
+      async previewPost() {
+        throw new Error("previewPost should not be called here");
+      },
+      async publishPost() {
+        return {
+          text: "如果一个 AI 说“我发出去了”，对方却没收到，那不是小 bug，而是信任断点。",
+          graphemeLength: 36,
+          maxGraphemes: 300,
+          fitsLimit: true,
+          overLimitBy: 0,
+          facetsCount: 0,
+          langs: ["zh-Hans", "en"],
+          activeChannelLabel: "Bluesky",
+          reviewRequired: true,
+          dryRun: false,
+          published: true,
+          handle: "qisongcareer.bsky.social",
+          uri: "at://example/app.bsky.feed.post/test",
+          cid: "cid123",
+        };
+      },
+    };
+    const service = new SocialOutboxService(outboxPath, draftsPath, mockBluesky);
+
+    service.upsertItem({
+      id: "OX-20260410-01",
+      targetChannel: "Aaron WeChat DM / Bluesky",
+      audience: "owner review / public",
+      intent: "review a short editorial take",
+      source: "digest",
+      relatedDraft: "OX-20260410-01 - Reliability before noise",
+      status: "waiting_review",
+      approval: "pending",
+      delivery: "not started",
+      nextStep: "show Aaron for review",
     });
 
-    expect(item.status).toBe("sent");
-    expect(item.delivery).toContain("sent at");
-    const content = fs.readFileSync(outboxPath, "utf8");
-    expect(content).toContain("### Recently Sent");
-    expect(content).toContain("OX-20260410-02");
+    const result = await service.publishBluesky({
+      id: "OX-20260410-01",
+      variant: "B",
+      approval: "approved by Aaron",
+      dryRun: false,
+    });
+
+    expect(result.chosenVariant).toBe("B");
+    expect(result.publish.published).toBe(true);
+    expect(result.outboxItem.status).toBe("sent");
+    expect(result.outboxItem.delivery).toContain("at://example/app.bsky.feed.post/test");
+    expect(fs.readFileSync(outboxPath, "utf8")).toContain("### Recently Sent");
   });
 });

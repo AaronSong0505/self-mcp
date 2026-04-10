@@ -1,5 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
+import {
+  BlueskySocialService,
+  type BlueskyPreviewResult,
+  type BlueskyPublishResult,
+} from "../../bluesky-social-mcp/src/service.js";
 
 export const OUTBOX_STATUSES = [
   "draft",
@@ -27,6 +32,17 @@ export type OutboxItem = {
   approval: string;
   delivery: string;
   nextStep: string;
+};
+
+export type DraftVariant = {
+  label: string;
+  text: string;
+};
+
+export type ReviewPacket = {
+  item: OutboxItem;
+  draftTitle: string;
+  variants: DraftVariant[];
 };
 
 export type ListOutboxParams = {
@@ -199,7 +215,7 @@ function ensureStatus(value: string): OutboxStatus {
 
 function parseItems(content: string): OutboxItem[] {
   const normalized = normalizeLineEndings(content);
-  const regex = /^### (OX-\d{8}-\d+)\n([\s\S]*?)(?=^### |\Z)/gm;
+  const regex = /^### (OX-\d{8}-\d+)\n([\s\S]*?)(?=^### |(?![\s\S]))/gm;
   const items: OutboxItem[] = [];
   let match: RegExpExecArray | null;
   while ((match = regex.exec(normalized))) {
@@ -220,6 +236,30 @@ function parseItems(content: string): OutboxItem[] {
     });
   }
   return items;
+}
+
+function parseDraftSections(content: string) {
+  const normalized = normalizeLineEndings(content);
+  const regex = /^## (OX-\d{8}-\d+) - (.+)\n([\s\S]*?)(?=^## OX-|(?:\n)?(?![\s\S]))/gm;
+  const sections = new Map<string, { title: string; variants: DraftVariant[] }>();
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(normalized))) {
+    const id = match[1]!;
+    const title = match[2]!.trim();
+    const block = match[3] ?? "";
+    const variants: DraftVariant[] = [];
+    const variantRegex = /^### Draft ([A-Z])\n([\s\S]*?)(?=^### Draft [A-Z]|(?:\n)?(?![\s\S]))/gm;
+    let variantMatch: RegExpExecArray | null;
+    while ((variantMatch = variantRegex.exec(block))) {
+      const label = variantMatch[1]!.trim();
+      const text = (variantMatch[2] ?? "").trim();
+      if (text) {
+        variants.push({ label, text });
+      }
+    }
+    sections.set(id, { title, variants });
+  }
+  return sections;
 }
 
 function renderItem(item: OutboxItem) {
@@ -269,8 +309,8 @@ function renderOutbox(items: OutboxItem[]) {
     "## Current Public Social Path",
     "",
     "- First public destination: `Bluesky`",
-    "- Current state: not active until credentials exist and the review loop is stable",
-    "- Until then, public-facing items should stop at `waiting_review` or `approved`",
+    "- Current state: active in review-gated mode; live publishing depends on Aaron approval and an active Kylin proxy path",
+    "- Public-facing items should still stop at `waiting_review` or `approved` unless they are explicitly approved for live publish",
     "",
   ].join("\n");
 }
@@ -289,13 +329,20 @@ function nowLabel() {
 }
 
 export class SocialOutboxService {
-  constructor(private readonly outboxPath: string) {}
+  constructor(
+    private readonly outboxPath: string,
+    private readonly draftsPath: string,
+    private readonly blueskyService: Pick<BlueskySocialService, "previewPost" | "publishPost"> = new BlueskySocialService(),
+  ) {}
 
   static createFromEnv() {
     const outboxPath =
       process.env.SOCIAL_OUTBOX_PATH ??
       path.join("D:/tools_work/one-company/openclaw/workspace", "OUTBOX.md");
-    return new SocialOutboxService(outboxPath);
+    const draftsPath =
+      process.env.SOCIAL_DRAFTS_PATH ??
+      path.join("D:/tools_work/one-company/openclaw/workspace", "SOCIAL_DRAFTS.md");
+    return new SocialOutboxService(outboxPath, draftsPath);
   }
 
   private readItems() {
@@ -310,6 +357,13 @@ export class SocialOutboxService {
     fs.writeFileSync(this.outboxPath, renderOutbox(items), "utf8");
   }
 
+  private readDraftSections() {
+    if (!fs.existsSync(this.draftsPath)) {
+      return new Map<string, { title: string; variants: DraftVariant[] }>();
+    }
+    return parseDraftSections(fs.readFileSync(this.draftsPath, "utf8"));
+  }
+
   listItems(params: ListOutboxParams = {}) {
     const status = params.status ?? "all";
     const items = this.readItems();
@@ -320,6 +374,108 @@ export class SocialOutboxService {
           ? items
           : items.filter((item) => item.status === status),
     };
+  }
+
+  getReviewPacket(id: string): ReviewPacket {
+    const item = this.readItems().find((candidate) => candidate.id === id);
+    if (!item) {
+      throw new Error(`OUTBOX item not found: ${id}`);
+    }
+    const section = this.readDraftSections().get(id);
+    if (!section) {
+      throw new Error(`Draft section not found for OUTBOX item: ${id}`);
+    }
+    return {
+      item,
+      draftTitle: section.title,
+      variants: section.variants,
+    };
+  }
+
+  async previewBluesky(
+    id: string,
+    variant = "B",
+  ): Promise<ReviewPacket & { chosenVariant: string; preview: BlueskyPreviewResult }> {
+    const packet = this.getReviewPacket(id);
+    const chosen =
+      packet.variants.find((candidate) => candidate.label === variant) ?? packet.variants[0];
+    if (!chosen) {
+      throw new Error(`No draft variants found for ${id}.`);
+    }
+    const preview = await this.blueskyService.previewPost({
+      text: chosen.text,
+      langs: ["zh-Hans", "en"],
+      sourceContext: `${id}:Draft${chosen.label}`,
+    });
+    return {
+      ...packet,
+      chosenVariant: chosen.label,
+      preview,
+    };
+  }
+
+  async publishBluesky(params: {
+    id: string;
+    variant?: string;
+    approval?: string;
+    dryRun?: boolean;
+  }): Promise<ReviewPacket & { chosenVariant: string; publish: BlueskyPublishResult; outboxItem: OutboxItem }> {
+    const packet = this.getReviewPacket(params.id);
+    const chosen =
+      packet.variants.find((candidate) => candidate.label === (params.variant ?? "B")) ??
+      packet.variants[0];
+    if (!chosen) {
+      throw new Error(`No draft variants found for ${params.id}.`);
+    }
+
+    const approval = params.approval ?? `approved by Aaron at ${nowLabel()}`;
+
+    if (!params.dryRun) {
+      this.transitionItem({
+        id: params.id,
+        status: "sending",
+        approval,
+        delivery: `publishing started at ${nowLabel()} via Bluesky`,
+        nextStep: `wait for publish result for Draft ${chosen.label}`,
+      });
+    }
+
+    try {
+      const publish = await this.blueskyService.publishPost({
+        text: chosen.text,
+        langs: ["zh-Hans", "en"],
+        sourceContext: `${params.id}:Draft${chosen.label}`,
+        dryRun: params.dryRun,
+      });
+
+      const outboxItem = params.dryRun
+        ? this.readItems().find((candidate) => candidate.id === params.id)!
+        : this.transitionItem({
+            id: params.id,
+            status: "sent",
+            approval,
+            delivery: `sent at ${nowLabel()} via Bluesky, uri \`${publish.uri}\``,
+            nextStep: "observe reception and draft the next review item when a stronger signal appears",
+          });
+
+      return {
+        ...packet,
+        chosenVariant: chosen.label,
+        publish,
+        outboxItem,
+      };
+    } catch (error) {
+      if (!params.dryRun) {
+        this.transitionItem({
+          id: params.id,
+          status: "failed",
+          approval,
+          delivery: `failed at ${nowLabel()} via Bluesky: ${error instanceof Error ? error.message : String(error)}`,
+          nextStep: "fix the publish path, then retry from a reviewed draft",
+        });
+      }
+      throw error;
+    }
   }
 
   upsertItem(params: UpsertOutboxParams) {
