@@ -9,6 +9,7 @@
     "dev:wechat-digest-mcp": "tsx services/wechat-digest-mcp/src/index.ts",
     "dev:wechat-household-mcp": "tsx services/wechat-household-mcp/src/index.ts",
     "dev:bluesky-social-mcp": "tsx services/bluesky-social-mcp/src/index.ts",
+    "dev:social-outbox-mcp": "tsx services/social-outbox-mcp/src/index.ts",
     "run:wechat-digest-morning": "node dist/services/wechat-digest-mcp/src/run-morning.js",
     "run:wechat-digest-followup": "node dist/services/wechat-digest-mcp/src/run-followup.js",
     "run:wechat-digest-diagnostic": "node dist/services/wechat-digest-mcp/src/run-diagnostic.js",
