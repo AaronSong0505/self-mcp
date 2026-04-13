@@ -50,6 +50,36 @@ export type BlueskyPublishResult = BlueskyPreviewResult & {
   cid?: string;
 };
 
+export type BlueskyPostSummary = {
+  uri: string;
+  cid?: string;
+  authorHandle?: string;
+  displayName?: string;
+  text: string;
+  indexedAt?: string;
+  likeCount?: number;
+  repostCount?: number;
+  replyCount?: number;
+};
+
+export type BlueskyFeedResult = {
+  source: string;
+  items: BlueskyPostSummary[];
+};
+
+export type BlueskyThreadResult = {
+  uri: string;
+  depth: number;
+  items: BlueskyPostSummary[];
+};
+
+export type BlueskyReplyResult = BlueskyPublishResult & {
+  parentUri: string;
+  parentCid: string;
+  rootUri: string;
+  rootCid: string;
+};
+
 type RuntimeConfig = {
   enabled: boolean;
   serviceUrl: string;
@@ -111,7 +141,7 @@ export function resolveProxyUrlFromEnv(env: NodeJS.ProcessEnv = process.env): st
       return trimmed;
     }
   }
-  return undefined;
+  return "socks5h://127.0.0.1:40008";
 }
 
 function buildFetchWithOptionalProxy(proxyUrl?: string): typeof globalThis.fetch | undefined {
@@ -221,6 +251,44 @@ async function createAuthenticatedAgent(config: RuntimeConfig): Promise<AtpAgent
 function normalizeLanguages(input: string[] | undefined, fallback: string[]): string[] {
   const values = (input ?? fallback).map((value) => value.trim()).filter(Boolean);
   return values.length > 0 ? [...new Set(values)] : fallback;
+}
+
+function extractPostText(record: unknown): string {
+  if (!record || typeof record !== "object") {
+    return "";
+  }
+  const candidate = record as { text?: unknown };
+  return typeof candidate.text === "string" ? candidate.text : "";
+}
+
+function summarizePostView(view: any): BlueskyPostSummary {
+  const post = view?.post ?? view;
+  return {
+    uri: String(post?.uri ?? ""),
+    ...(post?.cid ? { cid: String(post.cid) } : {}),
+    ...(post?.author?.handle ? { authorHandle: String(post.author.handle) } : {}),
+    ...(post?.author?.displayName ? { displayName: String(post.author.displayName) } : {}),
+    text: extractPostText(post?.record),
+    ...(post?.indexedAt ? { indexedAt: String(post.indexedAt) } : {}),
+    ...(typeof post?.likeCount === "number" ? { likeCount: post.likeCount } : {}),
+    ...(typeof post?.repostCount === "number" ? { repostCount: post.repostCount } : {}),
+    ...(typeof post?.replyCount === "number" ? { replyCount: post.replyCount } : {}),
+  };
+}
+
+function flattenThread(node: any, acc: BlueskyPostSummary[] = []): BlueskyPostSummary[] {
+  if (!node) {
+    return acc;
+  }
+  if (node?.post || node?.uri) {
+    acc.push(summarizePostView(node));
+  }
+  if (Array.isArray(node?.replies)) {
+    for (const reply of node.replies) {
+      flattenThread(reply, acc);
+    }
+  }
+  return acc;
 }
 
 async function buildPreview(params: {
@@ -347,6 +415,132 @@ export class BlueskySocialService {
       handle: this.config.identifier,
       uri: post.uri,
       cid: post.cid,
+    };
+  }
+
+  async homeFeed(params: { limit?: number } = {}): Promise<BlueskyFeedResult> {
+    const agent = await createAuthenticatedAgent(this.config);
+    const result = await agent.getTimeline({ limit: Math.min(Math.max(params.limit ?? 10, 1), 50) });
+    return {
+      source: "home",
+      items: (result.data.feed ?? []).map((entry: any) => summarizePostView(entry)),
+    };
+  }
+
+  async actorFeed(params: { actor?: string; limit?: number } = {}): Promise<BlueskyFeedResult> {
+    const agent = await createAuthenticatedAgent(this.config);
+    const actor = params.actor?.trim() || this.config.identifier;
+    if (!actor) {
+      throw new Error("Bluesky actor handle is not configured.");
+    }
+    const result = await agent.getAuthorFeed({
+      actor,
+      limit: Math.min(Math.max(params.limit ?? 10, 1), 50),
+    });
+    return {
+      source: actor,
+      items: (result.data.feed ?? []).map((entry: any) => summarizePostView(entry)),
+    };
+  }
+
+  async searchPosts(params: { q: string; limit?: number }): Promise<BlueskyFeedResult> {
+    const agent = await createAuthenticatedAgent(this.config);
+    const result = await agent.app.bsky.feed.searchPosts({
+      q: params.q.trim(),
+      limit: Math.min(Math.max(params.limit ?? 10, 1), 50),
+    });
+    return {
+      source: `search:${params.q.trim()}`,
+      items: (result.data.posts ?? []).map((entry: any) => summarizePostView(entry)),
+    };
+  }
+
+  async readThread(params: { uri: string; depth?: number }): Promise<BlueskyThreadResult> {
+    const agent = await createAuthenticatedAgent(this.config);
+    const depth = Math.min(Math.max(params.depth ?? 6, 0), 20);
+    const result = await agent.getPostThread({
+      uri: params.uri.trim(),
+      depth,
+    });
+    return {
+      uri: params.uri.trim(),
+      depth,
+      items: flattenThread(result.data.thread ?? null),
+    };
+  }
+
+  async replyPost(params: {
+    text: string;
+    parentUri: string;
+    parentCid: string;
+    rootUri?: string;
+    rootCid?: string;
+    langs?: string[];
+    sourceContext?: string;
+    dryRun?: boolean;
+  }): Promise<BlueskyReplyResult> {
+    if (!this.config.enabled) {
+      throw new Error("Bluesky social lane is disabled.");
+    }
+
+    const parentUri = params.parentUri.trim();
+    const parentCid = params.parentCid.trim();
+    const rootUri = params.rootUri?.trim() || parentUri;
+    const rootCid = params.rootCid?.trim() || parentCid;
+
+    if (!parentUri || !parentCid) {
+      throw new Error("Bluesky reply requires both parentUri and parentCid.");
+    }
+
+    if (params.dryRun) {
+      const preview = await this.previewPost(params);
+      return {
+        ...preview,
+        dryRun: true,
+        published: false,
+        parentUri,
+        parentCid,
+        rootUri,
+        rootCid,
+      };
+    }
+
+    const agent = await createAuthenticatedAgent(this.config);
+    const preview = await buildPreview({
+      text: params.text,
+      langs: params.langs,
+      sourceContext: params.sourceContext,
+      config: this.config,
+      detectWithAgent: agent,
+    });
+    if (!preview.fitsLimit) {
+      throw new Error(`Bluesky reply exceeds ${preview.maxGraphemes} graphemes by ${preview.overLimitBy}.`);
+    }
+
+    const richText = new RichText({ text: preview.text });
+    await richText.detectFacets(agent);
+    const post = await agent.post({
+      text: richText.text,
+      facets: richText.facets,
+      langs: preview.langs,
+      createdAt: new Date().toISOString(),
+      reply: {
+        root: { uri: rootUri, cid: rootCid },
+        parent: { uri: parentUri, cid: parentCid },
+      },
+    });
+
+    return {
+      ...preview,
+      dryRun: false,
+      published: true,
+      handle: this.config.identifier,
+      uri: post.uri,
+      cid: post.cid,
+      parentUri,
+      parentCid,
+      rootUri,
+      rootCid,
     };
   }
 }

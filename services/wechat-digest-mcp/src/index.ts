@@ -152,6 +152,37 @@ async function main() {
   );
 
   server.tool(
+    "wechat_digest.run",
+    "Run one full digest cycle deterministically: scan sources, analyze newly discovered articles, then build/send the digest for one target.",
+    {
+      date: z.string().optional(),
+      targetId: z.string().optional(),
+      dryRun: z.boolean().optional(),
+      sourceIds: z.array(z.string()).optional(),
+    },
+    async ({ date, targetId, dryRun, sourceIds }) => {
+      const scan = await service.scan({ sourceIds });
+      const newArticleIds = scan.articles
+        .filter((article) => article.status === "new")
+        .map((article) => article.articleId);
+      const analyzed = newArticleIds.length > 0 ? await service.analyze({ articleIds: newArticleIds }) : [];
+      const digest = await service.buildDigest({ date, targetId, dryRun });
+      const text =
+        dryRun === false
+          ? `Digest cycle complete: scanned=${scan.articles.length}, analyzed=${analyzed.length}, sent=${digest.sentCount}.`
+          : `Digest cycle dry-run: scanned=${scan.articles.length}, analyzed=${analyzed.length}, messages=${digest.messages.length}.`;
+      return {
+        content: [{ type: "text", text }],
+        structuredContent: {
+          scan,
+          analyzed,
+          digest,
+        },
+      };
+    },
+  );
+
+  server.tool(
     "wechat_digest.status",
     "Show today's scan/analyze/delivery status for the digest pipeline.",
     {
@@ -169,6 +200,31 @@ async function main() {
               `analyzed=${result.analyzed}, delivered=${result.delivered}, ` +
               `queuedCandidates=${result.queuedCandidates}, pendingDelivery=${result.pendingDelivery}, ` +
               `latestDigestStatus=${result.latestDigestStatus}, pendingLearning=${result.pendingLearning}.`,
+          },
+        ],
+        structuredContent: result,
+      };
+    },
+  );
+
+  server.tool(
+    "wechat_learning.followup",
+    "Send the evening follow-up reminder for still-pending learning candidates.",
+    {
+      date: z.string().optional(),
+      targetId: z.string().optional(),
+      dryRun: z.boolean().optional(),
+    },
+    async ({ date, targetId, dryRun }) => {
+      const result = await service.sendLearningFollowup({ date, targetId, dryRun });
+      return {
+        content: [
+          {
+            type: "text",
+            text:
+              dryRun === false
+                ? `Sent ${result.sentCount} learning follow-up message(s) for ${result.date}.`
+                : `Prepared ${result.messages.length} learning follow-up message(s) for ${result.date}.`,
           },
         ],
         structuredContent: result,

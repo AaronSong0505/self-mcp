@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { OUTBOX_STATUSES, SocialOutboxService } from "./service.js";
+import { runAutonomousCycle } from "./autonomous-cycle.js";
 
 async function main() {
   const service = SocialOutboxService.createFromEnv();
@@ -117,6 +118,36 @@ async function main() {
             text: result.publish.dryRun
               ? `Dry-ran ${result.item.id} Draft ${result.chosenVariant} for Bluesky.`
               : `Published ${result.item.id} Draft ${result.chosenVariant} to Bluesky: ${result.publish.uri}`,
+          },
+        ],
+        structuredContent: result,
+      };
+    },
+  );
+
+  server.tool(
+    "social_outbox.autonomous_cycle",
+    "Run Xiaoxiong's scheduled social cycle deterministically: draft if needed, check cooldown, and publish to Bluesky when allowed.",
+    {
+      dryRun: z.boolean().optional(),
+    },
+    async ({ dryRun }) => {
+      const result = await runAutonomousCycle({ dryRun });
+      const text =
+        result.status === "published" || result.status === "dry_run"
+          ? `${result.status} ${result.id} Draft ${result.chosenVariant}${result.uri ? ` -> ${result.uri}` : ""}`
+          : result.status === "blocked" ||
+              result.status === "disabled" ||
+              result.status === "out_of_window" ||
+              result.status === "cooldown" ||
+              result.status === "idle"
+            ? `${result.status}: ${result.reason}`
+            : `${result.status}`;
+      return {
+        content: [
+          {
+            type: "text",
+            text,
           },
         ],
         structuredContent: result,

@@ -1,10 +1,10 @@
 enabled: true
 startHour: 10
 endHour: 21
-minHoursBetweenPosts: 20
+minHoursBetweenPosts: 8
 defaultVariant: B
 autoDraft:
   enabled: true
   model: qwen3.5-plus
-  minHoursBetweenDrafts: 16
+  minHoursBetweenDrafts: 8
   maxChars: 260
