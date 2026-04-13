@@ -3,5 +3,5 @@ serviceUrl: https://bsky.social
 defaultLanguages:
   - zh-Hans
   - en
-reviewRequired: true
+reviewRequired: false
 activeChannelLabel: Bluesky

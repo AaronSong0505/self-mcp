@@ -33,6 +33,28 @@ async function main() {
   );
 
   server.tool(
+    "social_outbox.recent_published",
+    "List recent social posts that were actually published, so Aaron can inspect what Xiaoxiong has really posted.",
+    {
+      limit: z.number().int().min(1).max(20).optional(),
+    },
+    async ({ limit }) => {
+      const result = service.listRecentPublished(limit ?? 5);
+      const lines =
+        result.items.length === 0
+          ? ["No published social posts found yet."]
+          : result.items.map(
+              (item) =>
+                `${item.id} | ${item.channel} | ${item.publishedAt} | Draft ${item.variant}\n${item.text}`,
+            );
+      return {
+        content: [{ type: "text", text: lines.join("\n\n") }],
+        structuredContent: result,
+      };
+    },
+  );
+
+  server.tool(
     "social_outbox.review_packet",
     "Load one OUTBOX item together with its UTF-8 draft variants from SOCIAL_DRAFTS.md so review can happen deterministically.",
     {

@@ -13,6 +13,7 @@
     "run:wechat-digest-morning": "node dist/services/wechat-digest-mcp/src/run-morning.js",
     "run:wechat-digest-followup": "node dist/services/wechat-digest-mcp/src/run-followup.js",
     "run:wechat-digest-diagnostic": "node dist/services/wechat-digest-mcp/src/run-diagnostic.js",
+    "run:social-autopublish": "node dist/services/social-outbox-mcp/src/run-autopublish.js",
     "run:wechat-love-note": "node dist/services/wechat-love-note/src/run-love-note.js",
     "test": "vitest run"
   },

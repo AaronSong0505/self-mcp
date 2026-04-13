@@ -45,6 +45,38 @@ export type ReviewPacket = {
   variants: DraftVariant[];
 };
 
+export type PublishedPostRecord = {
+  id: string;
+  channel: string;
+  variant: string;
+  publishedAt: string;
+  publishedAtIso?: string;
+  uri: string;
+  cid?: string;
+  text: string;
+};
+
+export type AutopublishPlanResult =
+  | {
+      status: "out_of_window";
+      reason: string;
+    }
+  | {
+      status: "cooldown";
+      reason: string;
+      latestPublishedAt?: string;
+      nextAllowedAt?: string;
+    }
+  | {
+      status: "idle";
+      reason: string;
+    }
+  | {
+      status: "ready";
+      item: OutboxItem;
+      chosenVariant: string;
+    };
+
 export type ListOutboxParams = {
   status?: OutboxStatus | "all";
 };
@@ -332,12 +364,45 @@ function nowLabel() {
   return `${formatter.format(new Date()).replace(" ", " ")} Asia/Shanghai`;
 }
 
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function parsePublishedAtLabelToIso(label: string) {
+  const match = label.match(/^(\d{4}-\d{2}-\d{2}) (\d{2}):(\d{2}) Asia\/Shanghai$/);
+  if (!match) {
+    return undefined;
+  }
+  return `${match[1]}T${match[2]}:${match[3]}:00+08:00`;
+}
+
+function getShanghaiHour(date = new Date()) {
+  const formatter = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Shanghai",
+    hour: "2-digit",
+    hour12: false,
+  });
+  return Number(formatter.format(date));
+}
+
 export class SocialOutboxService {
+  private readonly postsPath: string;
+  private readonly blueskyService: Pick<BlueskySocialService, "previewPost" | "publishPost">;
+
   constructor(
     private readonly outboxPath: string,
     private readonly draftsPath: string,
-    private readonly blueskyService: Pick<BlueskySocialService, "previewPost" | "publishPost"> = new BlueskySocialService(),
-  ) {}
+    postsPathOrBlueskyService?: string | Pick<BlueskySocialService, "previewPost" | "publishPost">,
+    maybeBlueskyService?: Pick<BlueskySocialService, "previewPost" | "publishPost">,
+  ) {
+    if (typeof postsPathOrBlueskyService === "string") {
+      this.postsPath = postsPathOrBlueskyService;
+      this.blueskyService = maybeBlueskyService ?? new BlueskySocialService();
+    } else {
+      this.postsPath = path.join(path.dirname(outboxPath), "SOCIAL_POSTS.md");
+      this.blueskyService = postsPathOrBlueskyService ?? new BlueskySocialService();
+    }
+  }
 
   static createFromEnv() {
     const outboxPath =
@@ -346,7 +411,10 @@ export class SocialOutboxService {
     const draftsPath =
       process.env.SOCIAL_DRAFTS_PATH ??
       path.join("D:/tools_work/one-company/openclaw/workspace", "SOCIAL_DRAFTS.md");
-    return new SocialOutboxService(outboxPath, draftsPath);
+    const postsPath =
+      process.env.SOCIAL_POSTS_PATH ??
+      path.join(path.dirname(outboxPath), "SOCIAL_POSTS.md");
+    return new SocialOutboxService(outboxPath, draftsPath, postsPath);
   }
 
   private readItems() {
@@ -368,6 +436,72 @@ export class SocialOutboxService {
     return parseDraftSections(fs.readFileSync(this.draftsPath, "utf8"));
   }
 
+  private readPublishedPosts(): PublishedPostRecord[] {
+    if (!fs.existsSync(this.postsPath)) {
+      return [];
+    }
+    const normalized = normalizeLineEndings(fs.readFileSync(this.postsPath, "utf8"));
+    const regex = /^### (OX-\d{8}-\d+)\n([\s\S]*?)(?=^### |(?:\n)?(?![\s\S]))/gm;
+    const records: PublishedPostRecord[] = [];
+    let match: RegExpExecArray | null;
+    while ((match = regex.exec(normalized))) {
+      const id = match[1]!;
+      const block = match[2] ?? "";
+      const textMarker = "- Text:\n";
+      const textIndex = block.indexOf(textMarker);
+      const text =
+        textIndex >= 0
+          ? block.slice(textIndex + textMarker.length).trim()
+          : "";
+      records.push({
+        id,
+        channel: parseItemField(block, "Channel"),
+        variant: parseItemField(block, "Variant"),
+        publishedAt: parseItemField(block, "Published at"),
+        publishedAtIso:
+          parseItemField(block, "Published at ISO") ||
+          parsePublishedAtLabelToIso(parseItemField(block, "Published at")) ||
+          undefined,
+        uri: parseItemField(block, "URI"),
+        cid: parseItemField(block, "CID") || undefined,
+        text,
+      });
+    }
+    return records;
+  }
+
+  private writePublishedPosts(records: PublishedPostRecord[]) {
+    fs.mkdirSync(path.dirname(this.postsPath), { recursive: true });
+    const lines = [
+      "# SOCIAL_POSTS.md",
+      "",
+      "This file is the append-only log of social posts that actually went out.",
+      "",
+      "Use it when Aaron asks what Xiaoxiong has already posted, not what is still in draft.",
+      "",
+    ];
+    const ordered = [...records].sort((a, b) => b.publishedAt.localeCompare(a.publishedAt));
+    for (const record of ordered) {
+      lines.push(`### ${record.id}`, "");
+      lines.push(`- Channel: ${record.channel}`);
+      lines.push(`- Variant: ${record.variant}`);
+      lines.push(`- Published at: ${record.publishedAt}`);
+      lines.push(`- Published at ISO: ${record.publishedAtIso ?? parsePublishedAtLabelToIso(record.publishedAt) ?? ""}`);
+      lines.push(`- URI: ${record.uri}`);
+      lines.push(`- CID: ${record.cid ?? ""}`);
+      lines.push(`- Text:`);
+      lines.push(record.text);
+      lines.push("");
+    }
+    fs.writeFileSync(this.postsPath, `${lines.join("\n").trimEnd()}\n`, "utf8");
+  }
+
+  private appendPublishedPost(record: PublishedPostRecord) {
+    const records = this.readPublishedPosts().filter((candidate) => candidate.id !== record.id);
+    records.push(record);
+    this.writePublishedPosts(records);
+  }
+
   listItems(params: ListOutboxParams = {}) {
     const status = params.status ?? "all";
     const items = this.readItems();
@@ -377,6 +511,18 @@ export class SocialOutboxService {
         status === "all"
           ? items
           : items.filter((item) => item.status === status),
+    };
+  }
+
+  listRecentPublished(limit = 5) {
+    const records = this.readPublishedPosts()
+      .sort((a, b) =>
+        (b.publishedAtIso ?? b.publishedAt).localeCompare(a.publishedAtIso ?? a.publishedAt),
+      )
+      .slice(0, limit);
+    return {
+      postsPath: this.postsPath,
+      items: records,
     };
   }
 
@@ -464,6 +610,19 @@ export class SocialOutboxService {
             nextStep: "observe reception and draft the next review item when a stronger signal appears",
           });
 
+      if (!params.dryRun) {
+        this.appendPublishedPost({
+          id: params.id,
+          channel: "Bluesky",
+          variant: chosen.label,
+          publishedAt: nowLabel(),
+          publishedAtIso: nowIso(),
+          uri: publish.uri ?? "",
+          cid: publish.cid,
+          text: publish.text,
+        });
+      }
+
       return {
         ...packet,
         chosenVariant: chosen.label,
@@ -482,6 +641,65 @@ export class SocialOutboxService {
       }
       throw error;
     }
+  }
+
+  planNextAutonomousBluesky(params: {
+    defaultVariant?: string;
+    minHoursBetweenPosts?: number;
+    startHour?: number;
+    endHour?: number;
+  } = {}): AutopublishPlanResult {
+    const defaultVariant = normalizeVariantLabel(params.defaultVariant);
+    const minHoursBetweenPosts = params.minHoursBetweenPosts ?? 20;
+    const startHour = params.startHour ?? 10;
+    const endHour = params.endHour ?? 21;
+    const currentHour = getShanghaiHour();
+
+    if (currentHour < startHour || currentHour >= endHour) {
+      return {
+        status: "out_of_window",
+        reason: `Current Asia/Shanghai hour ${currentHour} is outside the publish window ${startHour}:00-${endHour}:00.`,
+      };
+    }
+
+    const latestPublished = this.readPublishedPosts()
+      .sort((a, b) => (b.publishedAtIso ?? b.publishedAt).localeCompare(a.publishedAtIso ?? a.publishedAt))[0];
+    if (latestPublished?.publishedAtIso) {
+      const latestTimestamp = Date.parse(latestPublished.publishedAtIso);
+      if (Number.isFinite(latestTimestamp)) {
+        const hoursSinceLatest = (Date.now() - latestTimestamp) / (1000 * 60 * 60);
+        if (hoursSinceLatest < minHoursBetweenPosts) {
+          const nextAllowed = new Date(latestTimestamp + minHoursBetweenPosts * 60 * 60 * 1000);
+          return {
+            status: "cooldown",
+            reason: `Latest Bluesky post is still within the ${minHoursBetweenPosts}-hour cooldown.`,
+            latestPublishedAt: latestPublished.publishedAt,
+            nextAllowedAt: nextAllowed.toISOString(),
+          };
+        }
+      }
+    }
+
+    const item = this.readItems()
+      .filter(
+        (candidate) =>
+          candidate.status === "scheduled" &&
+          /bluesky/i.test(candidate.targetChannel),
+      )
+      .sort((a, b) => a.created.localeCompare(b.created) || a.id.localeCompare(b.id))[0];
+
+    if (!item) {
+      return {
+        status: "idle",
+        reason: "No scheduled Bluesky items are ready for autonomous publishing.",
+      };
+    }
+
+    return {
+      status: "ready",
+      item,
+      chosenVariant: defaultVariant || "B",
+    };
   }
 
   upsertItem(params: UpsertOutboxParams) {

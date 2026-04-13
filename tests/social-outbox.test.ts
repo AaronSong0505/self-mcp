@@ -9,6 +9,7 @@ function createTempPaths() {
   return {
     outboxPath: path.join(root, "OUTBOX.md"),
     draftsPath: path.join(root, "SOCIAL_DRAFTS.md"),
+    postsPath: path.join(root, "SOCIAL_POSTS.md"),
   };
 }
 
@@ -93,7 +94,7 @@ describe("social outbox service", () => {
   });
 
   it("publishes a chosen draft variant through the deterministic UTF-8 path", async () => {
-    const { outboxPath, draftsPath } = createTempPaths();
+    const { outboxPath, draftsPath, postsPath } = createTempPaths();
     writeDrafts(draftsPath);
     const mockBluesky = {
       async previewPost() {
@@ -118,7 +119,7 @@ describe("social outbox service", () => {
         };
       },
     };
-    const service = new SocialOutboxService(outboxPath, draftsPath, mockBluesky);
+    const service = new SocialOutboxService(outboxPath, draftsPath, postsPath, mockBluesky);
 
     service.upsertItem({
       id: "OX-20260410-01",
@@ -145,5 +146,40 @@ describe("social outbox service", () => {
     expect(result.outboxItem.status).toBe("sent");
     expect(result.outboxItem.delivery).toContain("at://example/app.bsky.feed.post/test");
     expect(fs.readFileSync(outboxPath, "utf8")).toContain("### Recently Sent");
+    const posts = service.listRecentPublished(5);
+    expect(posts.items).toHaveLength(1);
+    expect(posts.items[0]?.id).toBe("OX-20260410-01");
+    expect(posts.items[0]?.text).toContain("信任断点");
+  });
+
+  it("plans autonomous Bluesky publishing from scheduled items while respecting cooldown", () => {
+    const { outboxPath, draftsPath, postsPath } = createTempPaths();
+    writeDrafts(draftsPath);
+    const service = new SocialOutboxService(outboxPath, draftsPath, postsPath);
+
+    service.upsertItem({
+      id: "OX-20260410-01",
+      targetChannel: "Bluesky",
+      audience: "public",
+      intent: "publish autonomously",
+      source: "watchlist",
+      relatedDraft: "OX-20260410-01 - Reliability before noise",
+      status: "scheduled",
+      approval: "not needed",
+      delivery: "not started",
+      nextStep: "publish when cadence allows",
+    });
+
+    const plan = service.planNextAutonomousBluesky({
+      defaultVariant: "B",
+      minHoursBetweenPosts: 20,
+      startHour: 0,
+      endHour: 24,
+    });
+    expect(plan.status).toBe("ready");
+    if (plan.status === "ready") {
+      expect(plan.item.id).toBe("OX-20260410-01");
+      expect(plan.chosenVariant).toBe("B");
+    }
   });
 });

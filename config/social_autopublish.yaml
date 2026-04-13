@@ -1,0 +1,5 @@
+enabled: true
+startHour: 10
+endHour: 21
+minHoursBetweenPosts: 20
+defaultVariant: B
