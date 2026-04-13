@@ -39,6 +39,12 @@ export type DraftVariant = {
   text: string;
 };
 
+export type DraftSection = {
+  id: string;
+  title: string;
+  variants: DraftVariant[];
+};
+
 export type ReviewPacket = {
   item: OutboxItem;
   draftTitle: string;
@@ -277,7 +283,7 @@ function parseItems(content: string): OutboxItem[] {
 function parseDraftSections(content: string) {
   const normalized = normalizeLineEndings(content);
   const regex = /^## (OX-\d{8}-\d+) - (.+)\n([\s\S]*?)(?=^## OX-|(?:\n)?(?![\s\S]))/gm;
-  const sections = new Map<string, { title: string; variants: DraftVariant[] }>();
+  const sections = new Map<string, DraftSection>();
   let match: RegExpExecArray | null;
   while ((match = regex.exec(normalized))) {
     const id = match[1]!;
@@ -293,9 +299,59 @@ function parseDraftSections(content: string) {
         variants.push({ label, text });
       }
     }
-    sections.set(id, { title, variants });
+    sections.set(id, { id, title, variants });
   }
   return sections;
+}
+
+function defaultDraftPreamble() {
+  return [
+    "# SOCIAL_DRAFTS.md",
+    "",
+    "Use this file for draft text only.",
+    "",
+    "Do not use this file as the send queue.",
+    "",
+    "Queue truth belongs in `OUTBOX.md`.",
+    "",
+    "## Rules",
+    "",
+    "- Keep drafts short, concrete, and easy to refine.",
+    "- Prefer one complete draft over multiple fragments.",
+    "- A draft should usually correspond to exactly one `OUTBOX.md` item ID.",
+    "- If the same idea has multiple variants, keep them grouped under one draft section.",
+    "- If a draft comes from digest or web research, note the source and why it matters.",
+    "- If the wording is not yet clear enough to draft, keep the signal in `SOCIAL_OBSERVATIONS.md` instead.",
+    "",
+    "## Canonical Draft Format",
+    "",
+    "```md",
+    "## OX-YYYYMMDD-01 - Short title",
+    "",
+    "- Target channel: Bluesky",
+    "- Source: digest / watchlist / social observation / direct request",
+    "- Why it matters: one sentence",
+    "",
+    "### Draft A",
+    "",
+    "Actual wording here.",
+    "",
+    "### Draft B",
+    "",
+    "Optional alternate wording here.",
+    "```",
+    "",
+    "## Current Draft Queue",
+    "",
+  ].join("\n");
+}
+
+function renderDraftSection(section: DraftSection) {
+  const lines = [`## ${section.id} - ${section.title}`, ""];
+  for (const variant of section.variants) {
+    lines.push(`### Draft ${variant.label}`, "", variant.text, "");
+  }
+  return lines.join("\n").trimEnd();
 }
 
 function renderItem(item: OutboxItem) {
@@ -345,8 +401,8 @@ function renderOutbox(items: OutboxItem[]) {
     "## Current Public Social Path",
     "",
     "- First public destination: `Bluesky`",
-    "- Current state: active in review-gated mode; live publishing depends on Aaron approval and an active Kylin proxy path",
-    "- Public-facing items should still stop at `waiting_review` or `approved` unless they are explicitly approved for live publish",
+    "- Current state: active in autonomous mode; live publishing depends on a healthy Kylin proxy path, outbox truth, and cadence limits",
+    "- Public-facing items should normally move through `scheduled`, then `sending`, then `sent` when the autonomous lane is healthy",
     "",
   ].join("\n");
 }
@@ -431,9 +487,20 @@ export class SocialOutboxService {
 
   private readDraftSections() {
     if (!fs.existsSync(this.draftsPath)) {
-      return new Map<string, { title: string; variants: DraftVariant[] }>();
+      return new Map<string, DraftSection>();
     }
     return parseDraftSections(fs.readFileSync(this.draftsPath, "utf8"));
+  }
+
+  private writeDraftSections(sections: DraftSection[]) {
+    fs.mkdirSync(path.dirname(this.draftsPath), { recursive: true });
+    const ordered = [...sections].sort((a, b) => a.id.localeCompare(b.id));
+    const body = ordered.map((section) => renderDraftSection(section)).join("\n\n");
+    fs.writeFileSync(
+      this.draftsPath,
+      `${[defaultDraftPreamble(), body].filter(Boolean).join("\n").trimEnd()}\n`,
+      "utf8",
+    );
   }
 
   private readPublishedPosts(): PublishedPostRecord[] {
@@ -523,6 +590,90 @@ export class SocialOutboxService {
     return {
       postsPath: this.postsPath,
       items: records,
+    };
+  }
+
+  hasScheduledBlueskyItem(): boolean {
+    return this.readItems().some((item) => item.status === "scheduled" && /bluesky/i.test(item.targetChannel));
+  }
+
+  getLatestCreatedAtForChannel(channelPattern: RegExp): string | undefined {
+    return this.readItems()
+      .filter((item) => channelPattern.test(item.targetChannel))
+      .sort((a, b) => b.created.localeCompare(a.created) || b.id.localeCompare(a.id))[0]?.created;
+  }
+
+  nextOutboxId(date = new Date()): string {
+    const formatter = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Shanghai",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    });
+    const datePart = formatter.format(date).replaceAll("-", "");
+    const ids = [
+      ...this.readItems().map((item) => item.id),
+      ...this.readPublishedPosts().map((item) => item.id),
+      ...this.readDraftSections().keys(),
+    ];
+    const used = ids
+      .filter((id) => id.startsWith(`OX-${datePart}-`))
+      .map((id) => Number(id.slice(-2)))
+      .filter((value) => Number.isFinite(value));
+    const next = (used.length ? Math.max(...used) : 0) + 1;
+    return `OX-${datePart}-${String(next).padStart(2, "0")}`;
+  }
+
+  createScheduledDraft(params: {
+    id?: string;
+    title: string;
+    variants: DraftVariant[];
+    intent: string;
+    source: string;
+    whyItMatters: string;
+    audience?: string;
+    targetChannel?: string;
+    approval?: string;
+    nextStep?: string;
+  }): ReviewPacket {
+    const id = params.id ?? this.nextOutboxId();
+    const variants = params.variants
+      .map((variant) => ({
+        label: normalizeVariantLabel(variant.label),
+        text: variant.text.trim(),
+      }))
+      .filter((variant) => Boolean(variant.text));
+    if (!variants.length) {
+      throw new Error("Cannot create a scheduled social draft without at least one variant.");
+    }
+
+    const sections = this.readDraftSections();
+    sections.set(id, {
+      id,
+      title: params.title.trim(),
+      variants,
+    });
+    this.writeDraftSections([...sections.values()]);
+
+    const item = this.upsertItem({
+      id,
+      targetChannel: params.targetChannel ?? "Bluesky",
+      audience: params.audience ?? "public",
+      intent: params.intent.trim(),
+      source: params.source.trim(),
+      relatedDraft: `${id} - ${params.title.trim()}`,
+      status: "scheduled",
+      approval: params.approval ?? "not needed",
+      delivery: "scheduled for autonomous publish when cadence and network allow",
+      nextStep:
+        params.nextStep ??
+        "publish the strongest variant automatically when the Bluesky lane is healthy and the cooldown window is clear",
+    });
+
+    return {
+      item,
+      draftTitle: params.title.trim(),
+      variants,
     };
   }
 

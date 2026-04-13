@@ -3,6 +3,7 @@ import path from "node:path";
 import YAML from "yaml";
 import { BlueskySocialService } from "../../bluesky-social-mcp/src/service.js";
 import { SocialOutboxService } from "./service.js";
+import { ensureAutonomousDraft } from "./autodraft.js";
 
 type AutopublishConfig = {
   enabled?: boolean;
@@ -10,6 +11,26 @@ type AutopublishConfig = {
   endHour?: number;
   minHoursBetweenPosts?: number;
   defaultVariant?: string;
+  autoDraft?: {
+    enabled?: boolean;
+    model?: string;
+    minHoursBetweenDrafts?: number;
+    maxChars?: number;
+  };
+};
+
+type LoadedAutopublishConfig = {
+  enabled: boolean;
+  startHour: number;
+  endHour: number;
+  minHoursBetweenPosts: number;
+  defaultVariant: string;
+  autoDraft: {
+    enabled: boolean;
+    model: string;
+    minHoursBetweenDrafts: number;
+    maxChars: number;
+  };
 };
 
 function parseArgs(argv: string[]) {
@@ -18,7 +39,7 @@ function parseArgs(argv: string[]) {
   };
 }
 
-function loadConfig(): Required<AutopublishConfig> {
+function loadConfig(): LoadedAutopublishConfig {
   const root =
     process.env.BLUESKY_SOCIAL_ROOT?.trim() ||
     process.env.WECHAT_DIGEST_ROOT?.trim() ||
@@ -37,6 +58,12 @@ function loadConfig(): Required<AutopublishConfig> {
     endHour: doc.endHour ?? 21,
     minHoursBetweenPosts: doc.minHoursBetweenPosts ?? 20,
     defaultVariant: doc.defaultVariant?.trim() || "B",
+    autoDraft: {
+      enabled: doc.autoDraft?.enabled !== false,
+      model: doc.autoDraft?.model?.trim() || "qwen3.5-plus",
+      minHoursBetweenDrafts: Math.max(6, doc.autoDraft?.minHoursBetweenDrafts ?? 16),
+      maxChars: Math.max(120, doc.autoDraft?.maxChars ?? 260),
+    },
   };
 }
 
@@ -51,15 +78,49 @@ async function main() {
   }
 
   const service = SocialOutboxService.createFromEnv();
-  const plan = service.planNextAutonomousBluesky({
+  let plan = service.planNextAutonomousBluesky({
     defaultVariant: config.defaultVariant,
     minHoursBetweenPosts: config.minHoursBetweenPosts,
     startHour: config.startHour,
     endHour: config.endHour,
   });
 
+  let autodraft:
+    | {
+        status: "skipped";
+        reason: string;
+      }
+    | {
+        status: "created";
+        id: string;
+        title: string;
+        chosenVariant: string;
+      }
+    | undefined;
+
+  if ((plan.status === "idle" || plan.status === "cooldown") && !service.hasScheduledBlueskyItem()) {
+    const workspaceRoot = path.dirname(
+      process.env.SOCIAL_OUTBOX_PATH ??
+        path.join("D:/tools_work/one-company/openclaw/workspace", "OUTBOX.md"),
+    );
+    autodraft = await ensureAutonomousDraft({
+      service,
+      workspaceRoot,
+      config: config.autoDraft,
+    });
+
+    if (autodraft.status === "created") {
+      plan = service.planNextAutonomousBluesky({
+        defaultVariant: config.defaultVariant,
+        minHoursBetweenPosts: config.minHoursBetweenPosts,
+        startHour: config.startHour,
+        endHour: config.endHour,
+      });
+    }
+  }
+
   if (plan.status !== "ready") {
-    process.stdout.write(`${JSON.stringify(plan)}\n`);
+    process.stdout.write(`${JSON.stringify({ ...plan, autodraft })}\n`);
     return;
   }
 
@@ -90,6 +151,7 @@ async function main() {
       chosenVariant: result.chosenVariant,
       uri: result.publish.uri ?? null,
       text: result.publish.text,
+      autodraft,
     })}\n`,
   );
 }
