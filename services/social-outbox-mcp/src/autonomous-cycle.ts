@@ -4,6 +4,7 @@ import YAML from "yaml";
 import { BlueskySocialService } from "../../bluesky-social-mcp/src/service.js";
 import { ensureAutonomousDraft, type AutoDraftResult } from "./autodraft.js";
 import { SocialOutboxService } from "./service.js";
+import { runXReviewCycle, type XReviewCycleResult } from "./x-cycle.js";
 
 type AutopublishConfig = {
   enabled?: boolean;
@@ -38,6 +39,7 @@ export type AutonomousCycleResult =
       status: "disabled" | "out_of_window" | "cooldown" | "idle";
       reason: string;
       autodraft?: AutoDraftResult;
+      xReview?: XReviewCycleResult;
       latestPublishedAt?: string;
       nextAllowedAt?: string;
     }
@@ -46,6 +48,7 @@ export type AutonomousCycleResult =
       reason: string;
       bluesky: Awaited<ReturnType<BlueskySocialService["status"]>>;
       autodraft?: AutoDraftResult;
+      xReview?: XReviewCycleResult;
     }
   | {
       status: "dry_run" | "published";
@@ -54,6 +57,7 @@ export type AutonomousCycleResult =
       uri: string | null;
       text: string;
       autodraft?: AutoDraftResult;
+      xReview?: XReviewCycleResult;
     };
 
 export function loadAutopublishConfig(): LoadedAutopublishConfig {
@@ -100,6 +104,10 @@ export async function runAutonomousCycle(params?: {
   }
 
   const service = params?.service ?? SocialOutboxService.createFromEnv();
+  const xReview = await runXReviewCycle({
+    dryRun,
+    service,
+  });
   let plan = service.planNextAutonomousBluesky({
     defaultVariant: config.defaultVariant,
     minHoursBetweenPosts: config.minHoursBetweenPosts,
@@ -132,6 +140,7 @@ export async function runAutonomousCycle(params?: {
   if (plan.status !== "ready") {
     return {
       ...plan,
+      xReview,
       ...(autodraft ? { autodraft } : {}),
     };
   }
@@ -143,6 +152,7 @@ export async function runAutonomousCycle(params?: {
       status: "blocked",
       reason: "Bluesky is not ready for autonomous publishing.",
       bluesky: status,
+      xReview,
       ...(autodraft ? { autodraft } : {}),
     };
   }
@@ -160,6 +170,7 @@ export async function runAutonomousCycle(params?: {
     chosenVariant: result.chosenVariant,
     uri: result.publish.uri ?? null,
     text: result.publish.text,
+    xReview,
     ...(autodraft ? { autodraft } : {}),
   };
 }

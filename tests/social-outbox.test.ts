@@ -116,6 +116,8 @@ describe("social outbox service", () => {
           handle: "qisongcareer.bsky.social",
           uri: "at://example/app.bsky.feed.post/test",
           cid: "cid123",
+          verified: true,
+          verificationTextMatches: true,
         };
       },
     };
@@ -145,6 +147,7 @@ describe("social outbox service", () => {
     expect(result.publish.published).toBe(true);
     expect(result.outboxItem.status).toBe("sent");
     expect(result.outboxItem.delivery).toContain("at://example/app.bsky.feed.post/test");
+    expect(result.outboxItem.delivery).toContain("verified");
     expect(fs.readFileSync(outboxPath, "utf8")).toContain("### Recently Sent");
     const posts = service.listRecentPublished(5);
     expect(posts.items).toHaveLength(1);

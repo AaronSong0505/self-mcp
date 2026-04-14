@@ -101,6 +101,21 @@ export type UpsertOutboxParams = {
   nextStep?: string;
 };
 
+export type CreateDraftItemParams = {
+  id?: string;
+  title: string;
+  variants: DraftVariant[];
+  intent: string;
+  source: string;
+  whyItMatters: string;
+  audience?: string;
+  targetChannel?: string;
+  approval?: string;
+  nextStep?: string;
+  status?: OutboxStatus;
+  delivery?: string;
+};
+
 export type TransitionOutboxParams = {
   id: string;
   status: OutboxStatus;
@@ -624,6 +639,49 @@ export class SocialOutboxService {
     return `OX-${datePart}-${String(next).padStart(2, "0")}`;
   }
 
+  createDraftItem(params: CreateDraftItemParams): ReviewPacket {
+    const id = params.id ?? this.nextOutboxId();
+    const variants = params.variants
+      .map((variant) => ({
+        label: normalizeVariantLabel(variant.label),
+        text: variant.text.trim(),
+      }))
+      .filter((variant) => Boolean(variant.text));
+    if (!variants.length) {
+      throw new Error("Cannot create an outbox draft item without at least one variant.");
+    }
+
+    const title = params.title.trim();
+    const sections = this.readDraftSections();
+    sections.set(id, {
+      id,
+      title,
+      variants,
+    });
+    this.writeDraftSections([...sections.values()]);
+
+    const item = this.upsertItem({
+      id,
+      targetChannel: params.targetChannel ?? "Bluesky",
+      audience: params.audience ?? "public",
+      intent: params.intent.trim(),
+      source: params.source.trim(),
+      relatedDraft: `${id} - ${title}`,
+      status: params.status ?? "draft",
+      approval: params.approval ?? "not needed",
+      delivery: params.delivery ?? "not started",
+      nextStep:
+        params.nextStep ??
+        `decide whether ${title} should advance toward a real outbound action`,
+    });
+
+    return {
+      item,
+      draftTitle: title,
+      variants,
+    };
+  }
+
   createScheduledDraft(params: {
     id?: string;
     title: string;
@@ -636,32 +694,15 @@ export class SocialOutboxService {
     approval?: string;
     nextStep?: string;
   }): ReviewPacket {
-    const id = params.id ?? this.nextOutboxId();
-    const variants = params.variants
-      .map((variant) => ({
-        label: normalizeVariantLabel(variant.label),
-        text: variant.text.trim(),
-      }))
-      .filter((variant) => Boolean(variant.text));
-    if (!variants.length) {
-      throw new Error("Cannot create a scheduled social draft without at least one variant.");
-    }
-
-    const sections = this.readDraftSections();
-    sections.set(id, {
-      id,
-      title: params.title.trim(),
-      variants,
-    });
-    this.writeDraftSections([...sections.values()]);
-
-    const item = this.upsertItem({
-      id,
+    const packet = this.createDraftItem({
+      id: params.id,
+      title: params.title,
+      variants: params.variants,
+      intent: params.intent,
+      source: params.source,
+      whyItMatters: params.whyItMatters,
+      audience: params.audience,
       targetChannel: params.targetChannel ?? "Bluesky",
-      audience: params.audience ?? "public",
-      intent: params.intent.trim(),
-      source: params.source.trim(),
-      relatedDraft: `${id} - ${params.title.trim()}`,
       status: "scheduled",
       approval: params.approval ?? "not needed",
       delivery: "scheduled for autonomous publish when cadence and network allow",
@@ -670,11 +711,7 @@ export class SocialOutboxService {
         "publish the strongest variant automatically when the Bluesky lane is healthy and the cooldown window is clear",
     });
 
-    return {
-      item,
-      draftTitle: params.title.trim(),
-      variants,
-    };
+    return packet;
   }
 
   getReviewPacket(id: string): ReviewPacket {
@@ -757,8 +794,11 @@ export class SocialOutboxService {
             id: params.id,
             status: "sent",
             approval,
-            delivery: `sent at ${nowLabel()} via Bluesky, uri \`${publish.uri}\``,
-            nextStep: "observe reception and draft the next review item when a stronger signal appears",
+            delivery: `sent at ${nowLabel()} via Bluesky, uri \`${publish.uri}\`${publish.verified === true ? ", verified" : publish.verificationError ? `, verification failed: ${publish.verificationError}` : ""}`,
+            nextStep:
+              publish.verified === true
+                ? "observe reception and let later posts build on verified delivery"
+                : "observe reception carefully and re-check the public lane because post verification did not complete cleanly",
           });
 
       if (!params.dryRun) {

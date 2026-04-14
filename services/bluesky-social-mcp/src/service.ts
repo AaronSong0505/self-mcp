@@ -21,12 +21,16 @@ export type BlueskyStatusResult = {
   configured: boolean;
   authenticated: boolean;
   serviceUrl: string;
+  proxyUrl?: string;
+  proxyEnabled?: boolean;
+  networkReachable?: boolean;
   handle?: string;
   did?: string;
   displayName?: string;
   reviewRequired: boolean;
   activeChannelLabel: string;
   defaultLanguages: string[];
+  lastError?: string;
 };
 
 export type BlueskyPreviewResult = {
@@ -48,6 +52,9 @@ export type BlueskyPublishResult = BlueskyPreviewResult & {
   handle?: string;
   uri?: string;
   cid?: string;
+  verified?: boolean;
+  verificationTextMatches?: boolean;
+  verificationError?: string;
 };
 
 export type BlueskyPostSummary = {
@@ -248,6 +255,30 @@ async function createAuthenticatedAgent(config: RuntimeConfig): Promise<AtpAgent
   }
 }
 
+async function verifyPublishedPost(
+  agent: AtpAgent,
+  uri: string,
+  expectedText: string,
+): Promise<Pick<BlueskyPublishResult, "verified" | "verificationTextMatches" | "verificationError">> {
+  try {
+    const response = await agent.app.bsky.feed.getPosts({
+      uris: [uri],
+    });
+    const post = response.data.posts?.[0];
+    const actualText = extractPostText(post?.record);
+    return {
+      verified: true,
+      verificationTextMatches: actualText === expectedText,
+    };
+  } catch (error) {
+    return {
+      verified: false,
+      verificationTextMatches: false,
+      verificationError: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 function normalizeLanguages(input: string[] | undefined, fallback: string[]): string[] {
   const values = (input ?? fallback).map((value) => value.trim()).filter(Boolean);
   return values.length > 0 ? [...new Set(values)] : fallback;
@@ -332,6 +363,13 @@ export class BlueskySocialService {
         configured,
         authenticated: false,
         serviceUrl: this.config.serviceUrl,
+        ...(this.config.proxyUrl
+          ? {
+              proxyUrl: this.config.proxyUrl,
+              proxyEnabled: true,
+              networkReachable: false,
+            }
+          : {}),
         reviewRequired: this.config.reviewRequired,
         activeChannelLabel: this.config.activeChannelLabel,
         defaultLanguages: this.config.defaultLanguages,
@@ -339,20 +377,48 @@ export class BlueskySocialService {
       };
     }
 
-    const agent = await createAuthenticatedAgent(this.config);
-    const profile = await agent.getProfile({ actor: this.config.identifier! });
-    return {
-      enabled: this.config.enabled,
-      configured: true,
-      authenticated: true,
-      serviceUrl: this.config.serviceUrl,
-      handle: profile.data.handle,
-      did: profile.data.did,
-      ...(profile.data.displayName ? { displayName: profile.data.displayName } : {}),
-      reviewRequired: this.config.reviewRequired,
-      activeChannelLabel: this.config.activeChannelLabel,
-      defaultLanguages: this.config.defaultLanguages,
-    };
+    try {
+      const agent = await createAuthenticatedAgent(this.config);
+      const profile = await agent.getProfile({ actor: this.config.identifier! });
+      return {
+        enabled: this.config.enabled,
+        configured: true,
+        authenticated: true,
+        serviceUrl: this.config.serviceUrl,
+        ...(this.config.proxyUrl
+          ? {
+              proxyUrl: this.config.proxyUrl,
+              proxyEnabled: true,
+            }
+          : {}),
+        networkReachable: true,
+        handle: profile.data.handle,
+        did: profile.data.did,
+        ...(profile.data.displayName ? { displayName: profile.data.displayName } : {}),
+        reviewRequired: this.config.reviewRequired,
+        activeChannelLabel: this.config.activeChannelLabel,
+        defaultLanguages: this.config.defaultLanguages,
+      };
+    } catch (error) {
+      return {
+        enabled: this.config.enabled,
+        configured: true,
+        authenticated: false,
+        serviceUrl: this.config.serviceUrl,
+        ...(this.config.proxyUrl
+          ? {
+              proxyUrl: this.config.proxyUrl,
+              proxyEnabled: true,
+            }
+          : {}),
+        networkReachable: false,
+        reviewRequired: this.config.reviewRequired,
+        activeChannelLabel: this.config.activeChannelLabel,
+        defaultLanguages: this.config.defaultLanguages,
+        lastError: error instanceof Error ? error.message : String(error),
+        ...(this.config.identifier ? { handle: this.config.identifier } : {}),
+      };
+    }
   }
 
   async previewPost(params: {
@@ -380,12 +446,14 @@ export class BlueskySocialService {
 
     if (params.dryRun) {
       const preview = await this.previewPost(params);
-      return {
-        ...preview,
-        dryRun: true,
-        published: false,
-      };
-    }
+    return {
+      ...preview,
+      dryRun: true,
+      published: false,
+      verified: false,
+      verificationTextMatches: false,
+    };
+  }
 
     const agent = await createAuthenticatedAgent(this.config);
     const preview = await buildPreview({
@@ -408,6 +476,8 @@ export class BlueskySocialService {
       createdAt: new Date().toISOString(),
     });
 
+    const verification = await verifyPublishedPost(agent, post.uri, preview.text);
+
     return {
       ...preview,
       dryRun: false,
@@ -415,6 +485,7 @@ export class BlueskySocialService {
       handle: this.config.identifier,
       uri: post.uri,
       cid: post.cid,
+      ...verification,
     };
   }
 

@@ -3,6 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { OUTBOX_STATUSES, SocialOutboxService } from "./service.js";
 import { runAutonomousCycle } from "./autonomous-cycle.js";
+import { runXReviewCycle } from "./x-cycle.js";
 
 async function main() {
   const service = SocialOutboxService.createFromEnv();
@@ -126,6 +127,25 @@ async function main() {
   );
 
   server.tool(
+    "social_outbox.x_review_cycle",
+    "Run Xiaoxiong's deterministic X/Twitter review cycle: read, think, store observations, and optionally queue an X draft.",
+    {
+      dryRun: z.boolean().optional(),
+    },
+    async ({ dryRun }) => {
+      const result = await runXReviewCycle({ dryRun, service });
+      const text =
+        result.status === "reviewed"
+          ? `reviewed X lane: home=${result.homeCount}, drafts=${result.draftId ? 1 : 0}, observations=${result.observationLines.length}`
+          : `${result.status}: ${result.reason}`;
+      return {
+        content: [{ type: "text", text }],
+        structuredContent: result,
+      };
+    },
+  );
+
+  server.tool(
     "social_outbox.autonomous_cycle",
     "Run Xiaoxiong's scheduled social cycle deterministically: draft if needed, check cooldown, and publish to Bluesky when allowed.",
     {
@@ -147,7 +167,7 @@ async function main() {
         content: [
           {
             type: "text",
-            text,
+            text: result.xReview ? `${text}\nX review: ${result.xReview.status}` : text,
           },
         ],
         structuredContent: result,
