@@ -132,7 +132,11 @@ export async function runAutonomousCycle(params?: {
       });
 
   let autodraft: AutoDraftResult | undefined;
-  if ((plan.status === "idle" || plan.status === "cooldown") && !service.hasScheduledItem(primaryIsX ? /^X \/ Twitter$/i : /bluesky/i)) {
+  if (
+    !dryRun &&
+    (plan.status === "idle" || plan.status === "cooldown") &&
+    !service.hasScheduledItem(primaryIsX ? /^X \/ Twitter$/i : /bluesky/i)
+  ) {
     const workspaceRoot = path.dirname(
       process.env.SOCIAL_OUTBOX_PATH ??
         path.join("D:/tools_work/one-company/openclaw/workspace", "OUTBOX.md"),

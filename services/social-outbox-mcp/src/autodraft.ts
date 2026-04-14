@@ -112,7 +112,7 @@ function fallbackRecipe(context: WorkspaceContext, maxChars: number, targetChann
     lines[0] ||
     "真正有用的，不是追最响的发布，而是把反复出现的弱信号慢慢追成判断。";
 
-  const zh = truncate(/[。！？]$/.test(signal) ? signal : `${signal}。`, maxChars);
+  const zh = truncate(/[。！？.!?]$/.test(signal) ? signal : `${signal}。`, maxChars);
 
   return {
     title: "Weak signals into judgment",

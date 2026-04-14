@@ -4,8 +4,9 @@ import {
   coerceXSearchMode,
   deriveHandleFromXStatusUrl,
   estimateXTextLength,
-  normalizeXStatusUrl,
   normalizeXActor,
+  normalizeXStatusUrl,
+  normalizeXTextForMatch,
 } from "../services/x-social-mcp/src/service.js";
 
 describe("x social helpers", () => {
@@ -43,7 +44,14 @@ describe("x social helpers", () => {
 
   it("estimates post length by unicode code points", () => {
     expect(estimateXTextLength("hello")).toBe(5);
-    expect(estimateXTextLength("🐻")).toBe(1);
+    expect(estimateXTextLength("🤦")).toBe(1);
     expect(estimateXTextLength("  hi  ")).toBe(2);
+  });
+
+  it("normalizes text for post matching", () => {
+    expect(normalizeXTextForMatch("  hello \n world  ")).toBe("hello world");
+    expect(normalizeXTextForMatch("如果一个 AI 说\n  “发出去了”  ")).toBe(
+      "如果一个 AI 说 “发出去了”",
+    );
   });
 });

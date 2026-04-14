@@ -9,6 +9,7 @@ import {
   coerceXSearchMode,
   deriveHandleFromXStatusUrl,
   estimateXTextLength,
+  normalizeXTextForMatch,
   normalizeXStatusUrl,
   normalizeXActor,
   type XSearchMode,
@@ -77,6 +78,7 @@ export type XPublishResult = XPostPreviewResult & {
 
 export type XReplyResult = XPublishResult & {
   parentUrl: string;
+  url?: string;
 };
 
 function resolveRootDir(): string {
@@ -218,6 +220,46 @@ async function ensureHomePage(page: Page) {
   if (!(await isLoggedIn(page))) {
     throw new Error("X browser lane is not logged in.");
   }
+}
+
+async function findPublishedPostOnProfile(params: {
+  page: Page;
+  handle: string;
+  text: string;
+  includeReplies?: boolean;
+  attempts?: number;
+}) {
+  const target = normalizeXTextForMatch(params.text);
+  const attempts = Math.max(1, params.attempts ?? 5);
+  const profileUrls = [
+    `https://x.com/${params.handle}`,
+    ...(params.includeReplies ? [`https://x.com/${params.handle}/with_replies`] : []),
+  ];
+
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    for (const profileUrl of profileUrls) {
+      await params.page.goto(profileUrl, {
+        waitUntil: "domcontentloaded",
+        timeout: 60000,
+      });
+      await waitForXPageReady(params.page);
+      const items = await extractPosts(params.page, 20);
+      const exact = items.find((item) => normalizeXTextForMatch(item.text) === target);
+      if (exact) {
+        return exact;
+      }
+      const fuzzy = items.find((item) => {
+        const normalized = normalizeXTextForMatch(item.text);
+        return normalized.startsWith(target) || target.startsWith(normalized);
+      });
+      if (fuzzy) {
+        return fuzzy;
+      }
+    }
+    await params.page.waitForTimeout(2000);
+  }
+
+  return undefined;
 }
 
 const execFileAsync = promisify(execFile);
@@ -404,6 +446,11 @@ export class XSocialService {
     }
     return withBrowserPage(this.config.cdpUrl, async (page) => {
       await ensureHomePage(page);
+      const status = await extractStatus(page);
+      const handle = normalizeXActor(status.handle);
+      if (!handle) {
+        throw new Error("X browser lane is authenticated but the current handle is unavailable.");
+      }
       const composer = page.locator('[data-testid="tweetTextarea_0"]').first();
       await composer.waitFor({ state: "visible", timeout: 15000 });
       await composer.click();
@@ -411,13 +458,21 @@ export class XSocialService {
       const button = page.locator('[data-testid="tweetButtonInline"], [data-testid="tweetButton"]').first();
       await button.waitFor({ state: "visible", timeout: 15000 });
       await button.click();
-      await page.waitForTimeout(2500);
-      const url = page.url();
+      await page.waitForTimeout(3000);
+      const publishedPost = await findPublishedPostOnProfile({
+        page,
+        handle,
+        text: preview.text,
+        includeReplies: false,
+      });
+      if (!publishedPost?.url) {
+        throw new Error("Could not verify a real X status URL after publishing.");
+      }
       return {
         ...preview,
         dryRun: false,
         published: true,
-        ...(url ? { url } : {}),
+        url: publishedPost.url,
       };
     });
   }
@@ -438,6 +493,11 @@ export class XSocialService {
     }
     return withBrowserPage(this.config.cdpUrl, async (page) => {
       await ensureHomePage(page);
+      const status = await extractStatus(page);
+      const handle = normalizeXActor(status.handle);
+      if (!handle) {
+        throw new Error("X browser lane is authenticated but the current handle is unavailable.");
+      }
       await page.goto(parentUrl, { waitUntil: "domcontentloaded", timeout: 60000 });
       await waitForXPageReady(page);
       const replyButton = page.locator('[data-testid="reply"]').first();
@@ -450,12 +510,22 @@ export class XSocialService {
       const button = page.locator('[data-testid="tweetButton"], [data-testid="tweetButtonInline"]').first();
       await button.waitFor({ state: "visible", timeout: 15000 });
       await button.click();
-      await page.waitForTimeout(2500);
+      await page.waitForTimeout(3000);
+      const publishedReply = await findPublishedPostOnProfile({
+        page,
+        handle,
+        text: preview.text,
+        includeReplies: true,
+      });
+      if (!publishedReply?.url) {
+        throw new Error("Could not verify a real X reply URL after publishing.");
+      }
       return {
         ...preview,
         dryRun: false,
         published: true,
         parentUrl,
+        url: publishedReply.url,
       };
     });
   }
@@ -473,5 +543,6 @@ export {
   deriveHandleFromXStatusUrl,
   estimateXTextLength,
   normalizeXStatusUrl,
+  normalizeXTextForMatch,
   normalizeXActor,
 };

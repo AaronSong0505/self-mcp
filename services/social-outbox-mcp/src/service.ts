@@ -272,7 +272,7 @@ function normalizeVariantLabel(value?: string) {
 }
 
 function parseItemField(block: string, label: string) {
-  const pattern = new RegExp(`^- ${label}:\\s*(.*)$`, "m");
+  const pattern = new RegExp(`^- ${label}:[ \\t]*(.*)$`, "m");
   return block.match(pattern)?.[1]?.trim() ?? "";
 }
 
@@ -915,6 +915,9 @@ export class SocialOutboxService {
         text: chosen.text,
         dryRun: params.dryRun,
       });
+      if (!params.dryRun && !publish.url) {
+        throw new Error("X publish completed without a verifiable status URL.");
+      }
 
       const outboxItem = params.dryRun
         ? this.readItems().find((candidate) => candidate.id === params.id)!
@@ -922,7 +925,7 @@ export class SocialOutboxService {
             id: params.id,
             status: "sent",
             approval,
-            delivery: `sent at ${nowLabel()} via X / Twitter${publish.url ? `, url \`${publish.url}\`` : ""}`,
+            delivery: `sent at ${nowLabel()} via X / Twitter, url \`${publish.url}\``,
             nextStep: "observe reception on X and let later posts build on actual discussion signals",
           });
 
@@ -995,6 +998,10 @@ export class SocialOutboxService {
         text: chosen.text,
         dryRun: params.dryRun,
       });
+      if (!params.dryRun && !publish.url) {
+        throw new Error("X reply completed without a verifiable reply URL.");
+      }
+      const verifiedReplyUrl = publish.url ?? "";
 
       const outboxItem = params.dryRun
         ? this.readItems().find((candidate) => candidate.id === params.id)!
@@ -1002,7 +1009,7 @@ export class SocialOutboxService {
             id: params.id,
             status: "sent",
             approval,
-            delivery: `sent at ${nowLabel()} via X / Twitter reply${publish.parentUrl ? `, parent \`${publish.parentUrl}\`` : ""}`,
+            delivery: `sent at ${nowLabel()} via X / Twitter reply, url \`${verifiedReplyUrl}\`, parent \`${publish.parentUrl}\``,
             nextStep: "observe whether the reply actually contributes to the thread",
           });
 
@@ -1013,7 +1020,7 @@ export class SocialOutboxService {
           variant: chosen.label,
           publishedAt: nowLabel(),
           publishedAtIso: nowIso(),
-          uri: publish.parentUrl,
+          uri: verifiedReplyUrl,
           targetUrl: publish.parentUrl,
           text: publish.text,
         });

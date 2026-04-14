@@ -42,3 +42,10 @@ export function normalizeXStatusUrl(url?: string): string | undefined {
 export function estimateXTextLength(text: string): number {
   return Array.from(text.trim()).length;
 }
+
+export function normalizeXTextForMatch(text: string): string {
+  return text
+    .replace(/\r\n/g, "\n")
+    .replace(/\s+/g, " ")
+    .trim();
+}

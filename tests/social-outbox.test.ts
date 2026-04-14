@@ -281,6 +281,7 @@ describe("social outbox service", () => {
           activeChannelLabel: "X / Twitter",
           dryRun: false,
           published: true,
+          url: "https://x.com/test/status/789",
           parentUrl: url,
         };
       },
@@ -310,9 +311,11 @@ describe("social outbox service", () => {
 
     expect(result.publish.published).toBe(true);
     expect(result.publish.parentUrl).toBe("https://x.com/example/status/456");
+    expect(result.publish.url).toBe("https://x.com/test/status/789");
     expect(result.outboxItem.status).toBe("sent");
     const posts = service.listRecentPublished(5);
     expect(posts.items[0]?.channel).toBe("X Reply");
+    expect(posts.items[0]?.uri).toBe("https://x.com/test/status/789");
     expect(posts.items[0]?.targetUrl).toBe("https://x.com/example/status/456");
   });
 

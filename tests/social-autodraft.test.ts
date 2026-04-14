@@ -59,7 +59,7 @@ function createWorkspaceRoot() {
 }
 
 describe("social autodraft", () => {
-  it("creates a scheduled autonomous Bluesky draft when none exists", async () => {
+  it("creates a scheduled autonomous X draft when none exists", async () => {
     const root = createWorkspaceRoot();
     const outboxPath = path.join(root, "OUTBOX.md");
     const draftsPath = path.join(root, "SOCIAL_DRAFTS.md");
@@ -87,10 +87,10 @@ describe("social autodraft", () => {
     expect(result.status).toBe("created");
     expect(fs.readFileSync(draftsPath, "utf8")).toContain("## OX-");
     expect(fs.readFileSync(outboxPath, "utf8")).toContain("Status: scheduled");
-    expect(service.hasScheduledBlueskyItem()).toBe(true);
+    expect(service.hasScheduledItem(/^X \/ Twitter$/i)).toBe(true);
   });
 
-  it("skips autodraft when a scheduled Bluesky item already exists", async () => {
+  it("skips autodraft when a scheduled X item already exists", async () => {
     const root = createWorkspaceRoot();
     const outboxPath = path.join(root, "OUTBOX.md");
     const draftsPath = path.join(root, "SOCIAL_DRAFTS.md");
@@ -128,6 +128,6 @@ describe("social autodraft", () => {
     if (result.status !== "skipped") {
       throw new Error(`Expected skipped autodraft result, got ${result.status}`);
     }
-    expect(result.reason).toContain("scheduled Bluesky item already exists");
+    expect(result.reason).toContain("scheduled X / Twitter item already exists");
   });
 });
