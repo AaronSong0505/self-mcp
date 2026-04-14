@@ -5,6 +5,12 @@ import {
   type BlueskyPreviewResult,
   type BlueskyPublishResult,
 } from "../../bluesky-social-mcp/src/service.js";
+import {
+  XSocialService,
+  type XPostPreviewResult,
+  type XPublishResult,
+  type XReplyResult,
+} from "../../x-social-mcp/src/service.js";
 
 export const OUTBOX_STATUSES = [
   "draft",
@@ -24,6 +30,7 @@ export type OutboxItem = {
   id: string;
   created: string;
   targetChannel: string;
+  targetUrl: string;
   audience: string;
   intent: string;
   source: string;
@@ -58,6 +65,7 @@ export type PublishedPostRecord = {
   publishedAt: string;
   publishedAtIso?: string;
   uri: string;
+  targetUrl?: string;
   cid?: string;
   text: string;
 };
@@ -91,6 +99,7 @@ export type UpsertOutboxParams = {
   id: string;
   created?: string;
   targetChannel?: string;
+  targetUrl?: string;
   audience?: string;
   intent?: string;
   source?: string;
@@ -110,6 +119,7 @@ export type CreateDraftItemParams = {
   whyItMatters: string;
   audience?: string;
   targetChannel?: string;
+  targetUrl?: string;
   approval?: string;
   nextStep?: string;
   status?: OutboxStatus;
@@ -137,6 +147,7 @@ const SECTION_ORDER: Array<{ title: string; statuses: OutboxStatus[] }> = [
 const FIELD_ORDER: Array<keyof OutboxItem> = [
   "created",
   "targetChannel",
+  "targetUrl",
   "audience",
   "intent",
   "source",
@@ -151,6 +162,7 @@ const FIELD_LABELS: Record<keyof OutboxItem, string> = {
   id: "Id",
   created: "Created",
   targetChannel: "Target channel",
+  targetUrl: "Target URL",
   audience: "Audience",
   intent: "Intent",
   source: "Source",
@@ -234,7 +246,8 @@ function defaultOutboxPreamble() {
     "### OX-YYYYMMDD-01",
     "",
     "- Created: 2026-04-09 14:20 Asia/Shanghai",
-    "- Target channel: Aaron WeChat DM / Bluesky",
+    "- Target channel: X / Twitter / Bluesky / Aaron WeChat DM",
+    "- Target URL: none / https://x.com/.../status/...",
     "- Audience: owner review / public",
     "- Intent: what this message is trying to do",
     "- Source: digest / watchlist / social observation / direct request",
@@ -282,6 +295,7 @@ function parseItems(content: string): OutboxItem[] {
       id,
       created: parseItemField(block, "Created"),
       targetChannel: parseItemField(block, "Target channel"),
+      targetUrl: parseItemField(block, "Target URL"),
       audience: parseItemField(block, "Audience"),
       intent: parseItemField(block, "Intent"),
       source: parseItemField(block, "Source"),
@@ -343,7 +357,7 @@ function defaultDraftPreamble() {
     "```md",
     "## OX-YYYYMMDD-01 - Short title",
     "",
-    "- Target channel: Bluesky",
+    "- Target channel: X / Twitter",
     "- Source: digest / watchlist / social observation / direct request",
     "- Why it matters: one sentence",
     "",
@@ -415,9 +429,10 @@ function renderOutbox(items: OutboxItem[]) {
     "",
     "## Current Public Social Path",
     "",
-    "- First public destination: `Bluesky`",
-    "- Current state: active in autonomous mode; live publishing depends on a healthy Kylin proxy path, outbox truth, and cadence limits",
-    "- Public-facing items should normally move through `scheduled`, then `sending`, then `sent` when the autonomous lane is healthy",
+    "- Primary public destination: `X / Twitter`",
+    "- Secondary public destination: `Bluesky`",
+    "- Current state: X is the preferred autonomous posting lane; Bluesky remains available as a secondary lane when the proxied path is healthy",
+    "- Public-facing items should normally move through `scheduled`, then `sending`, then `sent` when the strongest healthy lane is available",
     "",
   ].join("\n");
 }
@@ -459,19 +474,23 @@ function getShanghaiHour(date = new Date()) {
 export class SocialOutboxService {
   private readonly postsPath: string;
   private readonly blueskyService: Pick<BlueskySocialService, "previewPost" | "publishPost">;
+  private readonly xService: Pick<XSocialService, "previewPost" | "publishPost" | "replyPost">;
 
   constructor(
     private readonly outboxPath: string,
     private readonly draftsPath: string,
     postsPathOrBlueskyService?: string | Pick<BlueskySocialService, "previewPost" | "publishPost">,
     maybeBlueskyService?: Pick<BlueskySocialService, "previewPost" | "publishPost">,
+    maybeXService?: Pick<XSocialService, "previewPost" | "publishPost" | "replyPost">,
   ) {
     if (typeof postsPathOrBlueskyService === "string") {
       this.postsPath = postsPathOrBlueskyService;
       this.blueskyService = maybeBlueskyService ?? new BlueskySocialService();
+      this.xService = maybeXService ?? new XSocialService();
     } else {
       this.postsPath = path.join(path.dirname(outboxPath), "SOCIAL_POSTS.md");
       this.blueskyService = postsPathOrBlueskyService ?? new BlueskySocialService();
+      this.xService = new XSocialService();
     }
   }
 
@@ -545,6 +564,7 @@ export class SocialOutboxService {
           parsePublishedAtLabelToIso(parseItemField(block, "Published at")) ||
           undefined,
         uri: parseItemField(block, "URI"),
+        targetUrl: parseItemField(block, "Target URL") || undefined,
         cid: parseItemField(block, "CID") || undefined,
         text,
       });
@@ -570,6 +590,7 @@ export class SocialOutboxService {
       lines.push(`- Published at: ${record.publishedAt}`);
       lines.push(`- Published at ISO: ${record.publishedAtIso ?? parsePublishedAtLabelToIso(record.publishedAt) ?? ""}`);
       lines.push(`- URI: ${record.uri}`);
+      lines.push(`- Target URL: ${record.targetUrl ?? ""}`);
       lines.push(`- CID: ${record.cid ?? ""}`);
       lines.push(`- Text:`);
       lines.push(record.text);
@@ -608,8 +629,12 @@ export class SocialOutboxService {
     };
   }
 
+  hasScheduledItem(channelPattern: RegExp): boolean {
+    return this.readItems().some((item) => item.status === "scheduled" && channelPattern.test(item.targetChannel));
+  }
+
   hasScheduledBlueskyItem(): boolean {
-    return this.readItems().some((item) => item.status === "scheduled" && /bluesky/i.test(item.targetChannel));
+    return this.hasScheduledItem(/bluesky/i);
   }
 
   getLatestCreatedAtForChannel(channelPattern: RegExp): string | undefined {
@@ -662,7 +687,8 @@ export class SocialOutboxService {
 
     const item = this.upsertItem({
       id,
-      targetChannel: params.targetChannel ?? "Bluesky",
+      targetChannel: params.targetChannel ?? "X / Twitter",
+      targetUrl: params.targetUrl ?? "",
       audience: params.audience ?? "public",
       intent: params.intent.trim(),
       source: params.source.trim(),
@@ -689,10 +715,11 @@ export class SocialOutboxService {
     intent: string;
     source: string;
     whyItMatters: string;
-    audience?: string;
-    targetChannel?: string;
-    approval?: string;
-    nextStep?: string;
+      audience?: string;
+      targetChannel?: string;
+      targetUrl?: string;
+      approval?: string;
+      nextStep?: string;
   }): ReviewPacket {
     const packet = this.createDraftItem({
       id: params.id,
@@ -702,13 +729,14 @@ export class SocialOutboxService {
       source: params.source,
       whyItMatters: params.whyItMatters,
       audience: params.audience,
-      targetChannel: params.targetChannel ?? "Bluesky",
+      targetChannel: params.targetChannel ?? "X / Twitter",
+      targetUrl: params.targetUrl,
       status: "scheduled",
       approval: params.approval ?? "not needed",
       delivery: "scheduled for autonomous publish when cadence and network allow",
       nextStep:
         params.nextStep ??
-        "publish the strongest variant automatically when the Bluesky lane is healthy and the cooldown window is clear",
+        "publish the strongest variant automatically when the target lane is healthy and the cooldown window is clear",
     });
 
     return packet;
@@ -745,6 +773,27 @@ export class SocialOutboxService {
       text: chosen.text,
       langs: ["zh-Hans", "en"],
       sourceContext: `${id}:Draft${chosen.label}`,
+    });
+    return {
+      ...packet,
+      chosenVariant: chosen.label,
+      preview,
+    };
+  }
+
+  async previewX(
+    id: string,
+    variant = "B",
+  ): Promise<ReviewPacket & { chosenVariant: string; preview: XPostPreviewResult }> {
+    const packet = this.getReviewPacket(id);
+    const targetVariant = normalizeVariantLabel(variant);
+    const chosen =
+      packet.variants.find((candidate) => candidate.label === targetVariant) ?? packet.variants[0];
+    if (!chosen) {
+      throw new Error(`No draft variants found for ${id}.`);
+    }
+    const preview = this.xService.previewPost({
+      text: chosen.text,
     });
     return {
       ...packet,
@@ -834,12 +883,169 @@ export class SocialOutboxService {
     }
   }
 
-  planNextAutonomousBluesky(params: {
+  async publishX(params: {
+    id: string;
+    variant?: string;
+    approval?: string;
+    dryRun?: boolean;
+  }): Promise<ReviewPacket & { chosenVariant: string; publish: XPublishResult; outboxItem: OutboxItem }> {
+    const packet = this.getReviewPacket(params.id);
+    const targetVariant = normalizeVariantLabel(params.variant);
+    const chosen =
+      packet.variants.find((candidate) => candidate.label === targetVariant) ??
+      packet.variants[0];
+    if (!chosen) {
+      throw new Error(`No draft variants found for ${params.id}.`);
+    }
+
+    const approval = params.approval ?? `approved by Aaron at ${nowLabel()}`;
+
+    if (!params.dryRun) {
+      this.transitionItem({
+        id: params.id,
+        status: "sending",
+        approval,
+        delivery: `publishing started at ${nowLabel()} via X / Twitter`,
+        nextStep: `wait for publish result for Draft ${chosen.label}`,
+      });
+    }
+
+    try {
+      const publish = await this.xService.publishPost({
+        text: chosen.text,
+        dryRun: params.dryRun,
+      });
+
+      const outboxItem = params.dryRun
+        ? this.readItems().find((candidate) => candidate.id === params.id)!
+        : this.transitionItem({
+            id: params.id,
+            status: "sent",
+            approval,
+            delivery: `sent at ${nowLabel()} via X / Twitter${publish.url ? `, url \`${publish.url}\`` : ""}`,
+            nextStep: "observe reception on X and let later posts build on actual discussion signals",
+          });
+
+      if (!params.dryRun) {
+        this.appendPublishedPost({
+          id: params.id,
+          channel: "X / Twitter",
+          variant: chosen.label,
+          publishedAt: nowLabel(),
+          publishedAtIso: nowIso(),
+          uri: publish.url ?? "",
+          targetUrl: publish.url,
+          text: publish.text,
+        });
+      }
+
+      return {
+        ...packet,
+        chosenVariant: chosen.label,
+        publish,
+        outboxItem,
+      };
+    } catch (error) {
+      if (!params.dryRun) {
+        this.transitionItem({
+          id: params.id,
+          status: "failed",
+          approval,
+          delivery: `failed at ${nowLabel()} via X / Twitter: ${error instanceof Error ? error.message : String(error)}`,
+          nextStep: "fix the X publish path, then retry from a reviewed or scheduled draft",
+        });
+      }
+      throw error;
+    }
+  }
+
+  async publishXReply(params: {
+    id: string;
+    variant?: string;
+    approval?: string;
+    dryRun?: boolean;
+  }): Promise<ReviewPacket & { chosenVariant: string; publish: XReplyResult; outboxItem: OutboxItem }> {
+    const packet = this.getReviewPacket(params.id);
+    const targetVariant = normalizeVariantLabel(params.variant);
+    const chosen =
+      packet.variants.find((candidate) => candidate.label === targetVariant) ??
+      packet.variants[0];
+    if (!chosen) {
+      throw new Error(`No draft variants found for ${params.id}.`);
+    }
+    if (!packet.item.targetUrl) {
+      throw new Error(`OUTBOX item ${params.id} is missing Target URL for X reply publishing.`);
+    }
+
+    const approval = params.approval ?? `approved by Aaron at ${nowLabel()}`;
+
+    if (!params.dryRun) {
+      this.transitionItem({
+        id: params.id,
+        status: "sending",
+        approval,
+        delivery: `reply started at ${nowLabel()} via X / Twitter`,
+        nextStep: `wait for reply result for Draft ${chosen.label}`,
+      });
+    }
+
+    try {
+      const publish = await this.xService.replyPost({
+        url: packet.item.targetUrl,
+        text: chosen.text,
+        dryRun: params.dryRun,
+      });
+
+      const outboxItem = params.dryRun
+        ? this.readItems().find((candidate) => candidate.id === params.id)!
+        : this.transitionItem({
+            id: params.id,
+            status: "sent",
+            approval,
+            delivery: `sent at ${nowLabel()} via X / Twitter reply${publish.parentUrl ? `, parent \`${publish.parentUrl}\`` : ""}`,
+            nextStep: "observe whether the reply actually contributes to the thread",
+          });
+
+      if (!params.dryRun) {
+        this.appendPublishedPost({
+          id: params.id,
+          channel: "X Reply",
+          variant: chosen.label,
+          publishedAt: nowLabel(),
+          publishedAtIso: nowIso(),
+          uri: publish.parentUrl,
+          targetUrl: publish.parentUrl,
+          text: publish.text,
+        });
+      }
+
+      return {
+        ...packet,
+        chosenVariant: chosen.label,
+        publish,
+        outboxItem,
+      };
+    } catch (error) {
+      if (!params.dryRun) {
+        this.transitionItem({
+          id: params.id,
+          status: "failed",
+          approval,
+          delivery: `failed at ${nowLabel()} via X / Twitter reply: ${error instanceof Error ? error.message : String(error)}`,
+          nextStep: "re-read the thread, fix the reply path, then retry if the reply still matters",
+        });
+      }
+      throw error;
+    }
+  }
+
+  private planNextAutonomousChannel(params: {
+    channelPattern: RegExp;
     defaultVariant?: string;
     minHoursBetweenPosts?: number;
     startHour?: number;
     endHour?: number;
-  } = {}): AutopublishPlanResult {
+  }): AutopublishPlanResult {
     const defaultVariant = normalizeVariantLabel(params.defaultVariant);
     const minHoursBetweenPosts = params.minHoursBetweenPosts ?? 20;
     const startHour = params.startHour ?? 10;
@@ -854,6 +1060,7 @@ export class SocialOutboxService {
     }
 
     const latestPublished = this.readPublishedPosts()
+      .filter((item) => params.channelPattern.test(item.channel))
       .sort((a, b) => (b.publishedAtIso ?? b.publishedAt).localeCompare(a.publishedAtIso ?? a.publishedAt))[0];
     if (latestPublished?.publishedAtIso) {
       const latestTimestamp = Date.parse(latestPublished.publishedAtIso);
@@ -863,7 +1070,7 @@ export class SocialOutboxService {
           const nextAllowed = new Date(latestTimestamp + minHoursBetweenPosts * 60 * 60 * 1000);
           return {
             status: "cooldown",
-            reason: `Latest Bluesky post is still within the ${minHoursBetweenPosts}-hour cooldown.`,
+            reason: `Latest post for this channel is still within the ${minHoursBetweenPosts}-hour cooldown.`,
             latestPublishedAt: latestPublished.publishedAt,
             nextAllowedAt: nextAllowed.toISOString(),
           };
@@ -875,14 +1082,14 @@ export class SocialOutboxService {
       .filter(
         (candidate) =>
           candidate.status === "scheduled" &&
-          /bluesky/i.test(candidate.targetChannel),
+          params.channelPattern.test(candidate.targetChannel),
       )
       .sort((a, b) => a.created.localeCompare(b.created) || a.id.localeCompare(b.id))[0];
 
     if (!item) {
       return {
         status: "idle",
-        reason: "No scheduled Bluesky items are ready for autonomous publishing.",
+        reason: "No scheduled items are ready for this channel.",
       };
     }
 
@@ -891,6 +1098,36 @@ export class SocialOutboxService {
       item,
       chosenVariant: defaultVariant || "B",
     };
+  }
+
+  planNextAutonomousBluesky(params: {
+    defaultVariant?: string;
+    minHoursBetweenPosts?: number;
+    startHour?: number;
+    endHour?: number;
+  } = {}): AutopublishPlanResult {
+    return this.planNextAutonomousChannel({
+      channelPattern: /bluesky/i,
+      defaultVariant: params.defaultVariant,
+      minHoursBetweenPosts: params.minHoursBetweenPosts,
+      startHour: params.startHour,
+      endHour: params.endHour,
+    });
+  }
+
+  planNextAutonomousX(params: {
+    defaultVariant?: string;
+    minHoursBetweenPosts?: number;
+    startHour?: number;
+    endHour?: number;
+  } = {}): AutopublishPlanResult {
+    return this.planNextAutonomousChannel({
+      channelPattern: /^X \/ Twitter$/i,
+      defaultVariant: params.defaultVariant,
+      minHoursBetweenPosts: params.minHoursBetweenPosts,
+      startHour: params.startHour,
+      endHour: params.endHour,
+    });
   }
 
   upsertItem(params: UpsertOutboxParams) {
@@ -902,6 +1139,7 @@ export class SocialOutboxService {
       id: params.id,
       created,
       targetChannel: params.targetChannel ?? existing?.targetChannel ?? "",
+      targetUrl: params.targetUrl ?? existing?.targetUrl ?? "",
       audience: params.audience ?? existing?.audience ?? "",
       intent: params.intent ?? existing?.intent ?? "",
       source: params.source ?? existing?.source ?? "",

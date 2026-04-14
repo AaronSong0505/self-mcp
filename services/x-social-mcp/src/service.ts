@@ -1,5 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { chromium, type BrowserContext, type Page } from "playwright-core";
 import YAML from "yaml";
 import {
@@ -17,6 +19,8 @@ type XSocialConfigDoc = {
   cdpUrl?: string;
   activeChannelLabel?: string;
   defaultSearchMode?: XSearchMode;
+  bootstrapScript?: string;
+  bootstrapTimeoutMs?: number;
 };
 
 type RuntimeConfig = {
@@ -24,6 +28,8 @@ type RuntimeConfig = {
   cdpUrl: string;
   activeChannelLabel: string;
   defaultSearchMode: XSearchMode;
+  bootstrapScript?: string;
+  bootstrapTimeoutMs: number;
 };
 
 export type XStatusResult = {
@@ -95,6 +101,11 @@ function loadRuntimeConfig(): RuntimeConfig {
     cdpUrl: doc.cdpUrl?.trim() || process.env.X_SOCIAL_CDP_URL?.trim() || "http://127.0.0.1:18800",
     activeChannelLabel: doc.activeChannelLabel?.trim() || "X / Twitter",
     defaultSearchMode: coerceXSearchMode(doc.defaultSearchMode),
+    bootstrapScript:
+      doc.bootstrapScript?.trim() ||
+      process.env.X_SOCIAL_BOOTSTRAP_SCRIPT?.trim() ||
+      "D:/tools_work/one-company/openclaw/scripts/open-x-social.ps1",
+    bootstrapTimeoutMs: Math.max(15000, doc.bootstrapTimeoutMs ?? 45000),
   };
 }
 
@@ -209,8 +220,46 @@ async function ensureHomePage(page: Page) {
   }
 }
 
+const execFileAsync = promisify(execFile);
+
+async function maybeBootstrapXBrowser(config: RuntimeConfig) {
+  const script = config.bootstrapScript?.trim();
+  if (!script || !fs.existsSync(script)) {
+    return false;
+  }
+  try {
+    await execFileAsync(
+      "powershell",
+      [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        script,
+      ],
+      {
+        timeout: config.bootstrapTimeoutMs,
+        windowsHide: true,
+      },
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function withBrowserPage<T>(cdpUrl: string, fn: (page: Page, context: BrowserContext) => Promise<T>) {
-  const browser = await chromium.connectOverCDP(cdpUrl);
+  const config = loadRuntimeConfig();
+  let browser;
+  try {
+    browser = await chromium.connectOverCDP(cdpUrl);
+  } catch (error) {
+    const bootstrapped = await maybeBootstrapXBrowser(config);
+    if (!bootstrapped) {
+      throw error;
+    }
+    browser = await chromium.connectOverCDP(cdpUrl);
+  }
   try {
     const context = browser.contexts()[0] ?? (await browser.newContext());
     const page = await context.newPage();

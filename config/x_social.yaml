@@ -2,3 +2,5 @@ enabled: true
 cdpUrl: http://127.0.0.1:18800
 activeChannelLabel: X / Twitter
 defaultSearchMode: latest
+bootstrapScript: D:/tools_work/one-company/openclaw/scripts/open-x-social.ps1
+bootstrapTimeoutMs: 45000

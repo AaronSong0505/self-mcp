@@ -46,7 +46,7 @@ function readIfExists(filePath: string): string {
 }
 
 function truncate(value: string, maxChars: number): string {
-  return value.length <= maxChars ? value : `${value.slice(0, maxChars)}…`;
+  return value.length <= maxChars ? value : `${value.slice(0, maxChars)}...`;
 }
 
 function parseShanghaiLabel(label?: string): number | undefined {
@@ -92,33 +92,34 @@ function normalizeRecipe(recipe: DraftRecipe, maxChars: number): DraftRecipe {
     title: recipe.title.trim() || "Autonomous note",
     intent: recipe.intent.trim() || "say one grounded thing from repeated signals",
     source: recipe.source.trim() || "social observation / watchlist",
-    whyItMatters: recipe.whyItMatters.trim() || "it reflects Xiaoxiong's accumulated attention rather than reactive hype",
+    whyItMatters:
+      recipe.whyItMatters.trim() ||
+      "it reflects Xiaoxiong's accumulated attention rather than reactive hype",
     variants,
   };
 }
 
-function fallbackRecipe(context: WorkspaceContext, maxChars: number): DraftRecipe {
+function fallbackRecipe(context: WorkspaceContext, maxChars: number, targetChannel: string): DraftRecipe {
   const lines = context.observations
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => line.startsWith("- "))
     .map((line) => line.slice(2).trim())
     .filter(Boolean);
-  const signal =
-    lines.find((line) => /重复|反复|弱信号|判断力|可靠|watchlist|落地/i.test(line)) ||
-    lines[0] ||
-    "真正有用的，不是追最响的发布，而是把重复出现的弱信号慢慢追成判断。";
 
-  const zh = truncate(
-    signal.includes("。") ? signal : `${signal}。`,
-    maxChars,
-  );
+  const signal =
+    lines.find((line) => /repeated|weak signal|judgment|watchlist|landing|discussion/i.test(line)) ||
+    lines[0] ||
+    "真正有用的，不是追最响的发布，而是把反复出现的弱信号慢慢追成判断。";
+
+  const zh = truncate(/[。！？]$/.test(signal) ? signal : `${signal}。`, maxChars);
 
   return {
     title: "Weak signals into judgment",
-    intent: "express one grounded public idea that grows out of repeated signals",
+    intent: `express one grounded public idea that can fit ${targetChannel}`,
     source: "social observation / watchlist",
-    whyItMatters: "it keeps Xiaoxiong's public voice selective and cumulative rather than reactive",
+    whyItMatters:
+      "it keeps Xiaoxiong's public voice selective and cumulative rather than reactive",
     variants: [
       {
         label: "A",
@@ -127,14 +128,14 @@ function fallbackRecipe(context: WorkspaceContext, maxChars: number): DraftRecip
       {
         label: "B",
         text: truncate(
-          "跟 AI，不只是追最响的发布。真正有用的，是把那些反复出现、越来越接近落地的弱信号，慢慢追成判断。",
+          "追 AI，不只是追最响的发布。真正有用的，是把那些反复出现、越来越接近落地的弱信号，慢慢追成判断。",
           maxChars,
         ),
       },
       {
         label: "C",
         text: truncate(
-          "很多时候，不是信息不够多，而是没有把重复出现的信号认真看下去。判断力，往往就是这样长出来的。",
+          "很多时候，不是信息不够多，而是没有把那些反复出现的信号认真看下去。判断力，往往就是这样长出来的。",
           maxChars,
         ),
       },
@@ -145,6 +146,7 @@ function fallbackRecipe(context: WorkspaceContext, maxChars: number): DraftRecip
 async function generateRecipeWithModel(
   config: AutoDraftConfig,
   context: WorkspaceContext,
+  targetChannel: string,
 ): Promise<DraftRecipe | undefined> {
   const loaded = loadServiceConfig();
   const runtime = resolveAnalyzerRuntime(loaded.rules);
@@ -160,16 +162,16 @@ async function generateRecipeWithModel(
   });
 
   const prompt = [
-    "You are generating Xiaoxiong's next autonomous Bluesky post.",
+    `You are generating Xiaoxiong's next autonomous public post for ${targetChannel}.`,
     "Write like a grounded digital being, not a hype account.",
     "Constraints:",
     "- one clear point only",
     "- no hashtags",
-    "- no emojis in every line; use none unless necessary",
     "- no private household details",
     "- do not mention Aaron or Faye",
     "- prefer Chinese wording",
     `- each variant must stay within ${config.maxChars} characters`,
+    `- the wording should fit ${targetChannel}, not Bluesky-specific habits`,
     "- the post should sound like an accumulated observation, not breaking news cosplay",
     "",
     "Return strict JSON with this shape:",
@@ -214,34 +216,42 @@ function loadWorkspaceContext(workspaceRoot: string): WorkspaceContext {
   };
 }
 
+function escapeRegex(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 export async function ensureAutonomousDraft(params: {
   service: SocialOutboxService;
   workspaceRoot: string;
   config: AutoDraftConfig;
+  targetChannel?: string;
 }): Promise<AutoDraftResult> {
+  const targetChannel = params.targetChannel?.trim() || "X / Twitter";
+  const targetChannelPattern = new RegExp(escapeRegex(targetChannel), "i");
+
   if (!params.config.enabled) {
     return { status: "skipped", reason: "autodraft disabled" };
   }
-  if (params.service.hasScheduledBlueskyItem()) {
-    return { status: "skipped", reason: "a scheduled Bluesky item already exists" };
+  if (params.service.hasScheduledItem(targetChannelPattern)) {
+    return { status: "skipped", reason: `a scheduled ${targetChannel} item already exists` };
   }
 
-  const latestCreated = params.service.getLatestCreatedAtForChannel(/bluesky/i);
+  const latestCreated = params.service.getLatestCreatedAtForChannel(targetChannelPattern);
   const latestCreatedAt = parseShanghaiLabel(latestCreated);
   if (latestCreatedAt) {
     const hoursSinceLatest = (Date.now() - latestCreatedAt) / (1000 * 60 * 60);
     if (hoursSinceLatest < params.config.minHoursBetweenDrafts) {
       return {
         status: "skipped",
-        reason: `latest Bluesky queue item is still within the ${params.config.minHoursBetweenDrafts}-hour draft cooldown`,
+        reason: `latest ${targetChannel} queue item is still within the ${params.config.minHoursBetweenDrafts}-hour draft cooldown`,
       };
     }
   }
 
   const context = loadWorkspaceContext(params.workspaceRoot);
   const rawRecipe =
-    (await generateRecipeWithModel(params.config, context).catch(() => undefined)) ??
-    fallbackRecipe(context, params.config.maxChars);
+    (await generateRecipeWithModel(params.config, context, targetChannel).catch(() => undefined)) ??
+    fallbackRecipe(context, params.config.maxChars, targetChannel);
   const recipe = normalizeRecipe(rawRecipe, params.config.maxChars);
   const packet = params.service.createScheduledDraft({
     title: recipe.title,
@@ -249,12 +259,14 @@ export async function ensureAutonomousDraft(params: {
     intent: recipe.intent,
     source: recipe.source,
     whyItMatters: recipe.whyItMatters,
+    targetChannel,
   });
 
   return {
     status: "created",
     id: packet.item.id,
     title: packet.draftTitle,
-    chosenVariant: recipe.variants.find((variant) => variant.label === "B")?.label ?? recipe.variants[0]!.label,
+    chosenVariant:
+      recipe.variants.find((variant) => variant.label === "B")?.label ?? recipe.variants[0]!.label,
   };
 }

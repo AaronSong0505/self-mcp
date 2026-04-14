@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import YAML from "yaml";
 import { BlueskySocialService } from "../../bluesky-social-mcp/src/service.js";
+import { XSocialService } from "../../x-social-mcp/src/service.js";
 import { ensureAutonomousDraft, type AutoDraftResult } from "./autodraft.js";
 import { SocialOutboxService } from "./service.js";
 import { runXReviewCycle, type XReviewCycleResult } from "./x-cycle.js";
@@ -12,6 +13,8 @@ type AutopublishConfig = {
   endHour?: number;
   minHoursBetweenPosts?: number;
   defaultVariant?: string;
+  primaryChannel?: string;
+  secondaryChannel?: string;
   autoDraft?: {
     enabled?: boolean;
     model?: string;
@@ -26,6 +29,8 @@ export type LoadedAutopublishConfig = {
   endHour: number;
   minHoursBetweenPosts: number;
   defaultVariant: string;
+  primaryChannel: string;
+  secondaryChannel: string;
   autoDraft: {
     enabled: boolean;
     model: string;
@@ -46,13 +51,14 @@ export type AutonomousCycleResult =
   | {
       status: "blocked";
       reason: string;
-      bluesky: Awaited<ReturnType<BlueskySocialService["status"]>>;
+      channelStatus: unknown;
       autodraft?: AutoDraftResult;
       xReview?: XReviewCycleResult;
     }
   | {
       status: "dry_run" | "published";
       id: string;
+      channel: string;
       chosenVariant: string;
       uri: string | null;
       text: string;
@@ -79,6 +85,8 @@ export function loadAutopublishConfig(): LoadedAutopublishConfig {
     endHour: doc.endHour ?? 21,
     minHoursBetweenPosts: doc.minHoursBetweenPosts ?? 8,
     defaultVariant: doc.defaultVariant?.trim() || "B",
+    primaryChannel: doc.primaryChannel?.trim() || "X / Twitter",
+    secondaryChannel: doc.secondaryChannel?.trim() || "Bluesky",
     autoDraft: {
       enabled: doc.autoDraft?.enabled !== false,
       model: doc.autoDraft?.model?.trim() || "qwen3.5-plus",
@@ -108,15 +116,23 @@ export async function runAutonomousCycle(params?: {
     dryRun,
     service,
   });
-  let plan = service.planNextAutonomousBluesky({
-    defaultVariant: config.defaultVariant,
-    minHoursBetweenPosts: config.minHoursBetweenPosts,
-    startHour: config.startHour,
-    endHour: config.endHour,
-  });
+  const primaryIsX = /x/i.test(config.primaryChannel);
+  let plan = primaryIsX
+    ? service.planNextAutonomousX({
+        defaultVariant: config.defaultVariant,
+        minHoursBetweenPosts: config.minHoursBetweenPosts,
+        startHour: config.startHour,
+        endHour: config.endHour,
+      })
+    : service.planNextAutonomousBluesky({
+        defaultVariant: config.defaultVariant,
+        minHoursBetweenPosts: config.minHoursBetweenPosts,
+        startHour: config.startHour,
+        endHour: config.endHour,
+      });
 
   let autodraft: AutoDraftResult | undefined;
-  if ((plan.status === "idle" || plan.status === "cooldown") && !service.hasScheduledBlueskyItem()) {
+  if ((plan.status === "idle" || plan.status === "cooldown") && !service.hasScheduledItem(primaryIsX ? /^X \/ Twitter$/i : /bluesky/i)) {
     const workspaceRoot = path.dirname(
       process.env.SOCIAL_OUTBOX_PATH ??
         path.join("D:/tools_work/one-company/openclaw/workspace", "OUTBOX.md"),
@@ -125,21 +141,76 @@ export async function runAutonomousCycle(params?: {
       service,
       workspaceRoot,
       config: config.autoDraft,
+      targetChannel: config.primaryChannel,
     });
 
     if (autodraft.status === "created") {
-      plan = service.planNextAutonomousBluesky({
-        defaultVariant: config.defaultVariant,
-        minHoursBetweenPosts: config.minHoursBetweenPosts,
-        startHour: config.startHour,
-        endHour: config.endHour,
-      });
+      plan = primaryIsX
+        ? service.planNextAutonomousX({
+            defaultVariant: config.defaultVariant,
+            minHoursBetweenPosts: config.minHoursBetweenPosts,
+            startHour: config.startHour,
+            endHour: config.endHour,
+          })
+        : service.planNextAutonomousBluesky({
+            defaultVariant: config.defaultVariant,
+            minHoursBetweenPosts: config.minHoursBetweenPosts,
+            startHour: config.startHour,
+            endHour: config.endHour,
+          });
     }
   }
 
-  if (plan.status !== "ready") {
+  if (plan.status !== "ready" && config.secondaryChannel && primaryIsX) {
+    const secondaryPlan = service.planNextAutonomousBluesky({
+      defaultVariant: config.defaultVariant,
+      minHoursBetweenPosts: config.minHoursBetweenPosts,
+      startHour: config.startHour,
+      endHour: config.endHour,
+    });
+    if (secondaryPlan.status === "ready") {
+      plan = secondaryPlan;
+    } else {
+      return {
+        ...plan,
+        xReview,
+        ...(autodraft ? { autodraft } : {}),
+      };
+    }
+  } else if (plan.status !== "ready") {
     return {
       ...plan,
+      xReview,
+      ...(autodraft ? { autodraft } : {}),
+    };
+  }
+
+  const isXItem = /^X \/ Twitter$/i.test(plan.item.targetChannel);
+  if (isXItem) {
+    const xStatus = await new XSocialService().status();
+    if (!xStatus.enabled || !xStatus.reachable || !xStatus.authenticated) {
+      return {
+        status: "blocked",
+        reason: "X / Twitter is not ready for autonomous publishing.",
+        channelStatus: xStatus,
+        xReview,
+        ...(autodraft ? { autodraft } : {}),
+      };
+    }
+    const result = await service.publishX({
+      id: plan.item.id,
+      variant: plan.chosenVariant,
+      approval: `autonomously published by Xiaoxiong at ${new Date().toISOString()}`,
+      dryRun,
+    });
+
+    return {
+      status: dryRun ? "dry_run" : "published",
+      id: result.item.id,
+      channel: "X / Twitter",
+      chosenVariant: result.chosenVariant,
+      uri: result.publish.url ?? null,
+      text: result.publish.text,
       xReview,
       ...(autodraft ? { autodraft } : {}),
     };
@@ -151,7 +222,7 @@ export async function runAutonomousCycle(params?: {
     return {
       status: "blocked",
       reason: "Bluesky is not ready for autonomous publishing.",
-      bluesky: status,
+      channelStatus: status,
       xReview,
       ...(autodraft ? { autodraft } : {}),
     };
@@ -167,6 +238,7 @@ export async function runAutonomousCycle(params?: {
   return {
     status: dryRun ? "dry_run" : "published",
     id: result.item.id,
+    channel: "Bluesky",
     chosenVariant: result.chosenVariant,
     uri: result.publish.uri ?? null,
     text: result.publish.text,

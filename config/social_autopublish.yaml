@@ -3,6 +3,8 @@ startHour: 10
 endHour: 21
 minHoursBetweenPosts: 8
 defaultVariant: B
+primaryChannel: X / Twitter
+secondaryChannel: Bluesky
 autoDraft:
   enabled: true
   model: qwen3.5-plus
