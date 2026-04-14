@@ -1,5 +1,5 @@
 enabled: true
-minHoursBetweenReviews: 4
+minHoursBetweenReviews: 2
 homeLimit: 5
 searchLimit: 3
 searchTopics:

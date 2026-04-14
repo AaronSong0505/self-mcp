@@ -114,7 +114,7 @@ export function loadXCycleConfig(): LoadedXCycleConfig {
   const doc = readConfigDoc();
   return {
     enabled: doc.enabled !== false,
-    minHoursBetweenReviews: Math.max(1, doc.minHoursBetweenReviews ?? 4),
+    minHoursBetweenReviews: Math.max(1, doc.minHoursBetweenReviews ?? 2),
     homeLimit: Math.min(Math.max(doc.homeLimit ?? 5, 1), 10),
     searchLimit: Math.min(Math.max(doc.searchLimit ?? 3, 1), 10),
     searchTopics: (doc.searchTopics ?? ["OpenAI", "agent", "reinforcement learning", "OpenClaw"])
