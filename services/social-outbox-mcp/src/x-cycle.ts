@@ -11,6 +11,8 @@ type XCycleConfigDoc = {
   enabled?: boolean;
   minHoursBetweenReviews?: number;
   homeLimit?: number;
+  mentionsLimit?: number;
+  notificationsLimit?: number;
   searchLimit?: number;
   searchTopics?: string[];
   model?: string;
@@ -22,6 +24,8 @@ export type LoadedXCycleConfig = {
   enabled: boolean;
   minHoursBetweenReviews: number;
   homeLimit: number;
+  mentionsLimit: number;
+  notificationsLimit: number;
   searchLimit: number;
   searchTopics: string[];
   model: string;
@@ -64,6 +68,8 @@ export type XReviewCycleResult =
   | {
       status: "reviewed";
       homeCount: number;
+      mentionsCount: number;
+      notificationsCount: number;
       searchCounts: Record<string, number>;
       observationLines: string[];
       observationAdded: boolean;
@@ -116,6 +122,8 @@ export function loadXCycleConfig(): LoadedXCycleConfig {
     enabled: doc.enabled !== false,
     minHoursBetweenReviews: Math.max(1, doc.minHoursBetweenReviews ?? 2),
     homeLimit: Math.min(Math.max(doc.homeLimit ?? 5, 1), 10),
+    mentionsLimit: Math.min(Math.max(doc.mentionsLimit ?? 5, 1), 10),
+    notificationsLimit: Math.min(Math.max(doc.notificationsLimit ?? 5, 1), 10),
     searchLimit: Math.min(Math.max(doc.searchLimit ?? 3, 1), 10),
     searchTopics: (doc.searchTopics ?? ["OpenAI", "agent", "reinforcement learning", "OpenClaw"])
       .map((topic) => topic.trim())
@@ -219,10 +227,14 @@ function countLatinLetters(value: string) {
 
 export function inferPreferredXPublicLanguage(params: {
   home: XFeedResult;
+  mentions: XFeedResult;
+  notifications: XFeedResult;
   searches: Array<{ topic: string; result: XFeedResult }>;
 }): "English" | "Chinese" {
   const texts = [
     ...params.home.items.map((item) => item.text ?? ""),
+    ...params.mentions.items.map((item) => item.text ?? ""),
+    ...params.notifications.items.map((item) => item.text ?? ""),
     ...params.searches.flatMap((entry) => entry.result.items.map((item) => item.text ?? "")),
   ];
   const chineseChars = texts.reduce((sum, text) => sum + countHanChars(text), 0);
@@ -269,6 +281,8 @@ function normalizeRecipe(recipe: DraftRecipe, maxChars: number): DraftRecipe {
 async function analyzeXSignals(params: {
   config: LoadedXCycleConfig;
   home: XFeedResult;
+  mentions: XFeedResult;
+  notifications: XFeedResult;
   searches: Array<{ topic: string; result: XFeedResult }>;
   workspaceRoot: string;
 }): Promise<XReviewModelOutput | undefined> {
@@ -294,6 +308,8 @@ async function analyzeXSignals(params: {
   const observations = readIfExists(path.join(params.workspaceRoot, "SOCIAL_OBSERVATIONS.md"));
   const preferredLanguage = inferPreferredXPublicLanguage({
     home: params.home,
+    mentions: params.mentions,
+    notifications: params.notifications,
     searches: params.searches,
   });
 
@@ -337,6 +353,12 @@ async function analyzeXSignals(params: {
     "Home feed snapshot:",
     params.home.items.map((item) => summarizePost(item)).join("\n") || "none",
     "",
+    "Mentions snapshot:",
+    params.mentions.items.map((item) => summarizePost(item)).join("\n") || "none",
+    "",
+    "Notifications snapshot:",
+    params.notifications.items.map((item) => summarizePost(item)).join("\n") || "none",
+    "",
     "Search snapshots:",
     searchDigest || "none",
   ].join("\n");
@@ -351,8 +373,16 @@ async function analyzeXSignals(params: {
 
 function fallbackAnalysis(params: {
   home: XFeedResult;
+  mentions: XFeedResult;
+  notifications: XFeedResult;
   searches: Array<{ topic: string; result: XFeedResult }>;
 }): XReviewModelOutput {
+  if (params.mentions.items.length > 0) {
+    return {
+      lesson: "When somebody addresses Xiaoxiong directly, respond only after reading the thread and matching its language.",
+      action: "observe",
+    };
+  }
   return {
     lesson: "On X, reading the thread before reacting matters more than reacting fast.",
     action: "observe",
@@ -361,6 +391,8 @@ function fallbackAnalysis(params: {
 
 function buildObservationLines(params: {
   home: XFeedResult;
+  mentions: XFeedResult;
+  notifications: XFeedResult;
   searches: Array<{ topic: string; result: XFeedResult }>;
   analysis?: XReviewModelOutput;
 }) {
@@ -382,6 +414,17 @@ function buildObservationLines(params: {
     lines.push(`X search: active tracked topics this round are ${activeTopics.join(", ")}.`);
   } else {
     lines.push("X search: tracked topics were quiet enough that no strong cluster stood out.");
+  }
+
+  if (params.mentions.items.length > 0) {
+    const firstMention = params.mentions.items[0];
+    lines.push(
+      `X mentions: ${params.mentions.items.length} recent direct signal(s); ${firstMention.authorHandle ? `@${firstMention.authorHandle}` : "someone"} explicitly pulled Xiaoxiong into the conversation.`,
+    );
+  } else if (params.notifications.items.length > 0) {
+    lines.push("X notifications: the lane is receiving public signals even without a clear direct mention.");
+  } else {
+    lines.push("X mentions: nobody directly pulled Xiaoxiong into a thread this round.");
   }
 
   if (params.analysis?.action && params.analysis.action !== "observe") {
@@ -426,17 +469,23 @@ export async function runXReviewCycle(params?: {
   const xService = params?.xService ?? new XSocialService();
   let xStatus;
   let home: XFeedResult;
+  let mentions: XFeedResult;
+  let notifications: XFeedResult;
   let searches: Array<{ topic: string; result: XFeedResult }>;
   if (typeof (xService as XSocialService & { reviewSnapshot?: unknown }).reviewSnapshot === "function") {
     try {
       const snapshot = await (xService as XSocialService).reviewSnapshot({
         homeLimit: config.homeLimit,
+        mentionsLimit: config.mentionsLimit,
+        notificationsLimit: config.notificationsLimit,
         searchLimit: config.searchLimit,
         searchTopics: config.searchTopics,
         mode: "latest",
       });
       xStatus = snapshot.status;
       home = snapshot.home;
+      mentions = snapshot.mentions;
+      notifications = snapshot.notifications;
       searches = snapshot.searches;
     } catch (error) {
       return {
@@ -463,6 +512,12 @@ export async function runXReviewCycle(params?: {
     }
 
     home = await xService.homeFeed({ limit: config.homeLimit });
+    mentions = typeof (xService as XSocialService & { mentionsFeed?: unknown }).mentionsFeed === "function"
+      ? await (xService as XSocialService).mentionsFeed({ limit: config.mentionsLimit })
+      : { source: "mentions", items: [] };
+    notifications = typeof (xService as XSocialService & { notificationsFeed?: unknown }).notificationsFeed === "function"
+      ? await (xService as XSocialService).notificationsFeed({ limit: config.notificationsLimit })
+      : { source: "notifications", items: [] };
     searches = await Promise.all(
       config.searchTopics.map(async (topic) => ({
         topic,
@@ -482,15 +537,19 @@ export async function runXReviewCycle(params?: {
       await analyzeXSignals({
         config,
         home,
+        mentions,
+        notifications,
         searches,
         workspaceRoot,
       }).catch(() => undefined)
     ) ??
-      fallbackAnalysis({ home, searches }));
+      fallbackAnalysis({ home, mentions, notifications, searches }));
 
   const timestamp = nowLabel();
   const observationLines = buildObservationLines({
     home,
+    mentions,
+    notifications,
     searches,
     analysis,
   })
@@ -566,6 +625,8 @@ export async function runXReviewCycle(params?: {
   return {
     status: "reviewed",
     homeCount: home.items.length,
+    mentionsCount: mentions.items.length,
+    notificationsCount: notifications.items.length,
     searchCounts: Object.fromEntries(searches.map(({ topic, result }) => [topic, result.items.length])),
     observationLines,
     observationAdded,

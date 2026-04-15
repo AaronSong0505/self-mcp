@@ -51,6 +51,36 @@ async function main() {
   );
 
   server.tool(
+    "x_feed.mentions",
+    "Read the current X mentions timeline from the logged-in browser session.",
+    {
+      limit: z.number().int().min(1).max(20).optional(),
+    },
+    async ({ limit }) => {
+      const result = await service.mentionsFeed({ limit });
+      return {
+        content: [{ type: "text", text: renderPosts(result) }],
+        structuredContent: result,
+      };
+    },
+  );
+
+  server.tool(
+    "x_feed.notifications",
+    "Read the current X notifications timeline from the logged-in browser session.",
+    {
+      limit: z.number().int().min(1).max(20).optional(),
+    },
+    async ({ limit }) => {
+      const result = await service.notificationsFeed({ limit });
+      return {
+        content: [{ type: "text", text: renderPosts(result) }],
+        structuredContent: result,
+      };
+    },
+  );
+
+  server.tool(
     "x_feed.actor",
     "Read one actor's X feed. Defaults to the authenticated account if actor is omitted.",
     {

@@ -1,6 +1,8 @@
 enabled: true
 minHoursBetweenReviews: 2
 homeLimit: 5
+mentionsLimit: 5
+notificationsLimit: 5
 searchLimit: 3
 searchTopics:
   - OpenAI

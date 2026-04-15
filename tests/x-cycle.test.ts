@@ -66,6 +66,8 @@ describe("x review cycle", () => {
           },
         ],
       },
+      mentions: { source: "mentions", items: [] },
+      notifications: { source: "notifications", items: [] },
       searches: [
         {
           topic: "agent",
@@ -83,6 +85,7 @@ describe("x review cycle", () => {
         },
       ],
     });
+
     const chinese = inferPreferredXPublicLanguage({
       home: {
         source: "home",
@@ -95,14 +98,26 @@ describe("x review cycle", () => {
           },
         ],
       },
+      mentions: {
+        source: "mentions",
+        items: [
+          {
+            url: "https://x.com/test/status/4",
+            authorHandle: "mentioner",
+            timeIso: "2026-04-14T09:02:00.000Z",
+            text: "@BlueBear 你怎么看这种强化学习落地路径？",
+          },
+        ],
+      },
+      notifications: { source: "notifications", items: [] },
       searches: [
         {
-          topic: "智能体",
+          topic: "强化学习",
           result: {
-            source: "search:智能体",
+            source: "search:强化学习",
             items: [
               {
-                url: "https://x.com/test/status/4",
+                url: "https://x.com/test/status/5",
                 authorHandle: "searcher",
                 timeIso: "2026-04-14T09:05:00.000Z",
                 text: "如果没有真实交付链路，再漂亮的 demo 也不够。",
@@ -161,6 +176,18 @@ describe("x review cycle", () => {
           ],
         };
       },
+      async mentionsFeed() {
+        return {
+          source: "mentions",
+          items: [],
+        };
+      },
+      async notificationsFeed() {
+        return {
+          source: "notifications",
+          items: [],
+        };
+      },
       async searchPosts({ q }: { q: string }) {
         return {
           source: `search:${q}`,
@@ -187,8 +214,12 @@ describe("x review cycle", () => {
       throw new Error(`Expected reviewed result, got ${result.status}`);
     }
     expect(result.observationLines.length).toBeGreaterThan(0);
+    expect(result.mentionsCount).toBe(0);
+    expect(result.notificationsCount).toBe(0);
     expect(fs.readFileSync(path.join(root, "SOCIAL_OBSERVATIONS.md"), "utf8")).toContain("X review");
-    expect(fs.readFileSync(path.join(root, "SOCIAL_LESSONS.md"), "utf8")).toContain("reading the thread before reacting matters");
+    expect(fs.readFileSync(path.join(root, "SOCIAL_LESSONS.md"), "utf8")).toContain(
+      "reading the thread before reacting matters",
+    );
   });
 
   it("creates a scheduled X reply item when the review loop decides a thread deserves an answer", async () => {
@@ -225,6 +256,22 @@ describe("x review cycle", () => {
       async homeFeed() {
         return { source: "home", items: [] };
       },
+      async mentionsFeed() {
+        return {
+          source: "mentions",
+          items: [
+            {
+              url: "https://x.com/someone/status/1234567890",
+              authorHandle: "someone",
+              timeIso: "2026-04-14T08:09:00.000Z",
+              text: "@BlueBear this agent reliability take needs a clearer answer.",
+            },
+          ],
+        };
+      },
+      async notificationsFeed() {
+        return { source: "notifications", items: [] };
+      },
       async searchPosts() {
         return { source: "search:test", items: [] };
       },
@@ -245,8 +292,11 @@ describe("x review cycle", () => {
           source: "x review",
           whyItMatters: "the thread is close to something useful but still fuzzy",
           variants: [
-            { label: "A", text: "这条我同意一半，关键还是看真实交付链路。" },
-            { label: "B", text: "讨论到这里，最值得补的一句还是：先把真实交付链路看清楚，再下结论。" },
+            { label: "A", text: "I agree with half of this; the missing piece is still the delivery chain." },
+            {
+              label: "B",
+              text: "The missing sentence here is simple: inspect the real delivery chain before calling the system reliable.",
+            },
           ],
         },
       },
@@ -257,6 +307,7 @@ describe("x review cycle", () => {
       throw new Error(`Expected reviewed result, got ${result.status}`);
     }
     expect(result.draftAction).toBe("draft_reply");
+    expect(result.mentionsCount).toBe(1);
     const outbox = fs.readFileSync(outboxPath, "utf8");
     expect(outbox).toContain("Target channel: X Reply");
     expect(outbox).toContain("Target URL: https://x.com/someone/status/1234567890");

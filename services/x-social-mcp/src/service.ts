@@ -64,6 +64,8 @@ export type XFeedResult = {
 export type XReviewSnapshotResult = {
   status: XStatusResult;
   home: XFeedResult;
+  mentions: XFeedResult;
+  notifications: XFeedResult;
   searches: Array<{ topic: string; result: XFeedResult }>;
 };
 
@@ -244,6 +246,23 @@ async function ensureHomePage(page: Page) {
   if (!(await isLoggedIn(page))) {
     throw new Error("X browser lane is not logged in.");
   }
+}
+
+async function readFeedFromUrl(params: {
+  page: Page;
+  url: string;
+  source: string;
+  limit: number;
+}) {
+  await params.page.goto(params.url, {
+    waitUntil: "domcontentloaded",
+    timeout: 60000,
+  });
+  await waitForXPageReady(params.page);
+  return {
+    source: params.source,
+    items: await extractPosts(params.page, params.limit),
+  } satisfies XFeedResult;
 }
 
 async function findPublishedPostOnProfile(params: {
@@ -506,6 +525,32 @@ export class XSocialService {
     });
   }
 
+  async mentionsFeed(params: { limit?: number } = {}): Promise<XFeedResult> {
+    const limit = Math.min(Math.max(params.limit ?? 10, 1), 20);
+    return withBrowserPage(this.config.cdpUrl, async (page) => {
+      await ensureHomePage(page);
+      return readFeedFromUrl({
+        page,
+        url: "https://x.com/notifications/mentions",
+        source: "mentions",
+        limit,
+      });
+    });
+  }
+
+  async notificationsFeed(params: { limit?: number } = {}): Promise<XFeedResult> {
+    const limit = Math.min(Math.max(params.limit ?? 10, 1), 20);
+    return withBrowserPage(this.config.cdpUrl, async (page) => {
+      await ensureHomePage(page);
+      return readFeedFromUrl({
+        page,
+        url: "https://x.com/notifications",
+        source: "notifications",
+        limit,
+      });
+    });
+  }
+
   async searchPosts(params: { q: string; limit?: number; mode?: string }): Promise<XFeedResult> {
     const limit = Math.min(Math.max(params.limit ?? 10, 1), 20);
     const mode = coerceXSearchMode(params.mode || this.config.defaultSearchMode);
@@ -526,11 +571,15 @@ export class XSocialService {
 
   async reviewSnapshot(params: {
     homeLimit?: number;
+    mentionsLimit?: number;
+    notificationsLimit?: number;
     searchLimit?: number;
     searchTopics?: string[];
     mode?: string;
   }): Promise<XReviewSnapshotResult> {
     const homeLimit = Math.min(Math.max(params.homeLimit ?? 5, 1), 20);
+    const mentionsLimit = Math.min(Math.max(params.mentionsLimit ?? 5, 1), 20);
+    const notificationsLimit = Math.min(Math.max(params.notificationsLimit ?? 5, 1), 20);
     const searchLimit = Math.min(Math.max(params.searchLimit ?? 3, 1), 20);
     const mode = coerceXSearchMode(params.mode || this.config.defaultSearchMode);
     const topics = (params.searchTopics ?? []).map((topic) => topic.trim()).filter(Boolean);
@@ -542,6 +591,18 @@ export class XSocialService {
         source: "home",
         items: await extractPosts(page, homeLimit),
       };
+      const mentions = await readFeedFromUrl({
+        page,
+        url: "https://x.com/notifications/mentions",
+        source: "mentions",
+        limit: mentionsLimit,
+      });
+      const notifications = await readFeedFromUrl({
+        page,
+        url: "https://x.com/notifications",
+        source: "notifications",
+        limit: notificationsLimit,
+      });
       const searches: Array<{ topic: string; result: XFeedResult }> = [];
       for (const topic of topics) {
         await page.goto(buildXSearchUrl(topic, mode), {
@@ -568,6 +629,8 @@ export class XSocialService {
           ...(snapshot.handle ? { handle: snapshot.handle } : {}),
         },
         home,
+        mentions,
+        notifications,
         searches,
       };
     });
