@@ -209,6 +209,30 @@ function summarizePost(item: XPostSummary) {
   ].join(" | ");
 }
 
+function countHanChars(value: string) {
+  return (value.match(/\p{Script=Han}/gu) ?? []).length;
+}
+
+function countLatinLetters(value: string) {
+  return (value.match(/[A-Za-z]/g) ?? []).length;
+}
+
+export function inferPreferredXPublicLanguage(params: {
+  home: XFeedResult;
+  searches: Array<{ topic: string; result: XFeedResult }>;
+}): "English" | "Chinese" {
+  const texts = [
+    ...params.home.items.map((item) => item.text ?? ""),
+    ...params.searches.flatMap((entry) => entry.result.items.map((item) => item.text ?? "")),
+  ];
+  const chineseChars = texts.reduce((sum, text) => sum + countHanChars(text), 0);
+  const latinLetters = texts.reduce((sum, text) => sum + countLatinLetters(text), 0);
+  if (chineseChars >= 24 && chineseChars >= Math.max(18, Math.floor(latinLetters * 0.35))) {
+    return "Chinese";
+  }
+  return "English";
+}
+
 function extractJson<T>(text: string): T | undefined {
   const match = text.match(/\{[\s\S]*\}/);
   if (!match) {
@@ -268,6 +292,10 @@ async function analyzeXSignals(params: {
   const lessons = readIfExists(path.join(params.workspaceRoot, "SOCIAL_LESSONS.md"));
   const posts = readIfExists(path.join(params.workspaceRoot, "SOCIAL_POSTS.md"));
   const observations = readIfExists(path.join(params.workspaceRoot, "SOCIAL_OBSERVATIONS.md"));
+  const preferredLanguage = inferPreferredXPublicLanguage({
+    home: params.home,
+    searches: params.searches,
+  });
 
   const searchDigest = params.searches
     .map(
@@ -285,7 +313,10 @@ async function analyzeXSignals(params: {
     "- optionally decide whether there is one clear public angle worth drafting later",
     "- do not force a draft if the signal is weak",
     "- do not leak private household details",
-    "- prefer Chinese wording",
+    `- default public language for this round: ${preferredLanguage}`,
+    "- use English by default for public output",
+    "- only use Chinese when the target thread or discussion is clearly Chinese-language",
+    "- if action=draft_reply, match the language of the thread you are replying to",
     `- any draft variant must stay within ${params.config.maxDraftChars} characters`,
     "",
     "Return JSON in this exact shape:",

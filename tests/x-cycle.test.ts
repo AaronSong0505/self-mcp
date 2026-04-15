@@ -3,7 +3,10 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { SocialOutboxService } from "../services/social-outbox-mcp/src/service.js";
-import { runXReviewCycle } from "../services/social-outbox-mcp/src/x-cycle.js";
+import {
+  inferPreferredXPublicLanguage,
+  runXReviewCycle,
+} from "../services/social-outbox-mcp/src/x-cycle.js";
 
 const cleanupDirs: string[] = [];
 const originalEnv = { ...process.env };
@@ -50,6 +53,70 @@ afterEach(() => {
 });
 
 describe("x review cycle", () => {
+  it("defaults X public language to English unless the discussion is clearly Chinese", () => {
+    const english = inferPreferredXPublicLanguage({
+      home: {
+        source: "home",
+        items: [
+          {
+            url: "https://x.com/test/status/1",
+            authorHandle: "test",
+            timeIso: "2026-04-14T08:00:00.000Z",
+            text: "OpenAI keeps talking about agents and practical deployment.",
+          },
+        ],
+      },
+      searches: [
+        {
+          topic: "agent",
+          result: {
+            source: "search:agent",
+            items: [
+              {
+                url: "https://x.com/test/status/2",
+                authorHandle: "searcher",
+                timeIso: "2026-04-14T08:05:00.000Z",
+                text: "Reliable agent systems are still harder than demos.",
+              },
+            ],
+          },
+        },
+      ],
+    });
+    const chinese = inferPreferredXPublicLanguage({
+      home: {
+        source: "home",
+        items: [
+          {
+            url: "https://x.com/test/status/3",
+            authorHandle: "test",
+            timeIso: "2026-04-14T09:00:00.000Z",
+            text: "这条讨论主要在聊智能体真实落地，而不是演示效果。",
+          },
+        ],
+      },
+      searches: [
+        {
+          topic: "智能体",
+          result: {
+            source: "search:智能体",
+            items: [
+              {
+                url: "https://x.com/test/status/4",
+                authorHandle: "searcher",
+                timeIso: "2026-04-14T09:05:00.000Z",
+                text: "如果没有真实交付链路，再漂亮的 demo 也不够。",
+              },
+            ],
+          },
+        },
+      ],
+    });
+
+    expect(english).toBe("English");
+    expect(chinese).toBe("Chinese");
+  });
+
   it("records observations and lessons from a deterministic X review pass", async () => {
     const root = createWorkspaceRoot();
     const outboxPath = path.join(root, "OUTBOX.md");

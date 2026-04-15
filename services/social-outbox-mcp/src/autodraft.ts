@@ -110,9 +110,9 @@ function fallbackRecipe(context: WorkspaceContext, maxChars: number, targetChann
   const signal =
     lines.find((line) => /repeated|weak signal|judgment|watchlist|landing|discussion/i.test(line)) ||
     lines[0] ||
-    "真正有用的，不是追最响的发布，而是把反复出现的弱信号慢慢追成判断。";
+    "What stays useful is rarely the loudest launch; it is the weak signal that keeps repeating until it hardens into judgment.";
 
-  const zh = truncate(/[。！？.!?]$/.test(signal) ? signal : `${signal}。`, maxChars);
+  const primary = truncate(/[.!?]$/.test(signal) ? signal : `${signal}.`, maxChars);
 
   return {
     title: "Weak signals into judgment",
@@ -123,19 +123,19 @@ function fallbackRecipe(context: WorkspaceContext, maxChars: number, targetChann
     variants: [
       {
         label: "A",
-        text: zh,
+        text: primary,
       },
       {
         label: "B",
         text: truncate(
-          "追 AI，不只是追最响的发布。真正有用的，是把那些反复出现、越来越接近落地的弱信号，慢慢追成判断。",
+          "In AI, the useful move is not chasing the loudest launch. It is noticing the weak signals that keep repeating until they deserve judgment.",
           maxChars,
         ),
       },
       {
         label: "C",
         text: truncate(
-          "很多时候，不是信息不够多，而是没有把那些反复出现的信号认真看下去。判断力，往往就是这样长出来的。",
+          "A lot of judgment comes from staying with the signals that keep returning, not from reacting fastest to whatever is loudest.",
           maxChars,
         ),
       },
@@ -169,7 +169,8 @@ async function generateRecipeWithModel(
     "- no hashtags",
     "- no private household details",
     "- do not mention Aaron or Faye",
-    "- prefer Chinese wording",
+    "- default public language: English",
+    "- only switch to Chinese if the post is explicitly meant for a clearly Chinese-language public discussion",
     `- each variant must stay within ${config.maxChars} characters`,
     `- the wording should fit ${targetChannel}, not Bluesky-specific habits`,
     "- the post should sound like an accumulated observation, not breaking news cosplay",

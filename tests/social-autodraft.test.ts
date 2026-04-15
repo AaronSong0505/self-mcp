@@ -86,6 +86,7 @@ describe("social autodraft", () => {
 
     expect(result.status).toBe("created");
     expect(fs.readFileSync(draftsPath, "utf8")).toContain("## OX-");
+    expect(fs.readFileSync(draftsPath, "utf8")).toContain("In AI, the useful move is not chasing the loudest launch.");
     expect(fs.readFileSync(outboxPath, "utf8")).toContain("Status: scheduled");
     expect(service.hasScheduledItem(/^X \/ Twitter$/i)).toBe(true);
   });
