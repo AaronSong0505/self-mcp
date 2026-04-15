@@ -350,4 +350,38 @@ describe("social outbox service", () => {
       expect(plan.chosenVariant).toBe("B");
     }
   });
+
+  it("plans autonomous X reply publishing from scheduled reply items", () => {
+    const { outboxPath, draftsPath, postsPath } = createTempPaths();
+    writeDrafts(draftsPath);
+    const service = new SocialOutboxService(outboxPath, draftsPath, postsPath);
+
+    service.upsertItem({
+      id: "OX-20260414-02",
+      targetChannel: "X Reply",
+      targetUrl: "https://x.com/example/status/456",
+      audience: "public thread",
+      intent: "reply autonomously to a thread",
+      source: "x review",
+      relatedDraft: "OX-20260414-02 - X reply candidate",
+      status: "scheduled",
+      approval: "not needed",
+      delivery: "not started",
+      nextStep: "reply when lane health and reply cadence allow",
+    });
+
+    const plan = service.planNextAutonomousXReply({
+      defaultVariant: "B",
+      minHoursBetweenReplies: 2,
+      startHour: 0,
+      endHour: 24,
+    });
+
+    expect(plan.status).toBe("ready");
+    if (plan.status === "ready") {
+      expect(plan.item.id).toBe("OX-20260414-02");
+      expect(plan.item.targetChannel).toBe("X Reply");
+      expect(plan.chosenVariant).toBe("B");
+    }
+  });
 });

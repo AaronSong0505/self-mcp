@@ -4,3 +4,4 @@ activeChannelLabel: X / Twitter
 defaultSearchMode: latest
 bootstrapScript: D:/tools_work/one-company/openclaw/scripts/open-x-social.ps1
 bootstrapTimeoutMs: 45000
+userDataDir: C:/Users/Aaron Song/AppData/Local/openclaw/browser/openclaw-profile

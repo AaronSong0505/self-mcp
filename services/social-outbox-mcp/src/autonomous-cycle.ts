@@ -12,6 +12,7 @@ type AutopublishConfig = {
   startHour?: number;
   endHour?: number;
   minHoursBetweenPosts?: number;
+  minHoursBetweenReplies?: number;
   defaultVariant?: string;
   primaryChannel?: string;
   secondaryChannel?: string;
@@ -28,6 +29,7 @@ export type LoadedAutopublishConfig = {
   startHour: number;
   endHour: number;
   minHoursBetweenPosts: number;
+  minHoursBetweenReplies: number;
   defaultVariant: string;
   primaryChannel: string;
   secondaryChannel: string;
@@ -84,6 +86,7 @@ export function loadAutopublishConfig(): LoadedAutopublishConfig {
     startHour: doc.startHour ?? 10,
     endHour: doc.endHour ?? 21,
     minHoursBetweenPosts: doc.minHoursBetweenPosts ?? 8,
+    minHoursBetweenReplies: doc.minHoursBetweenReplies ?? 2,
     defaultVariant: doc.defaultVariant?.trim() || "B",
     primaryChannel: doc.primaryChannel?.trim() || "X / Twitter",
     secondaryChannel: doc.secondaryChannel?.trim() || "Bluesky",
@@ -117,7 +120,15 @@ export async function runAutonomousCycle(params?: {
     service,
   });
   const primaryIsX = /x/i.test(config.primaryChannel);
-  let plan = primaryIsX
+  const xReplyPlan = primaryIsX
+    ? service.planNextAutonomousXReply({
+        defaultVariant: config.defaultVariant,
+        minHoursBetweenReplies: config.minHoursBetweenReplies,
+        startHour: config.startHour,
+        endHour: config.endHour,
+      })
+    : undefined;
+  const xPostPlan = primaryIsX
     ? service.planNextAutonomousX({
         defaultVariant: config.defaultVariant,
         minHoursBetweenPosts: config.minHoursBetweenPosts,
@@ -130,6 +141,16 @@ export async function runAutonomousCycle(params?: {
         startHour: config.startHour,
         endHour: config.endHour,
       });
+  let plan =
+    xReplyPlan?.status === "ready"
+      ? xReplyPlan
+      : xPostPlan;
+  let planKind: "x_reply" | "x_post" | "bluesky" =
+    xReplyPlan?.status === "ready"
+      ? "x_reply"
+      : primaryIsX
+        ? "x_post"
+        : "bluesky";
 
   let autodraft: AutoDraftResult | undefined;
   if (
@@ -149,7 +170,15 @@ export async function runAutonomousCycle(params?: {
     });
 
     if (autodraft.status === "created") {
-      plan = primaryIsX
+      const refreshedReplyPlan = primaryIsX
+        ? service.planNextAutonomousXReply({
+            defaultVariant: config.defaultVariant,
+            minHoursBetweenReplies: config.minHoursBetweenReplies,
+            startHour: config.startHour,
+            endHour: config.endHour,
+          })
+        : undefined;
+      const refreshedPostPlan = primaryIsX
         ? service.planNextAutonomousX({
             defaultVariant: config.defaultVariant,
             minHoursBetweenPosts: config.minHoursBetweenPosts,
@@ -162,6 +191,16 @@ export async function runAutonomousCycle(params?: {
             startHour: config.startHour,
             endHour: config.endHour,
           });
+      plan =
+        refreshedReplyPlan?.status === "ready"
+          ? refreshedReplyPlan
+          : refreshedPostPlan;
+      planKind =
+        refreshedReplyPlan?.status === "ready"
+          ? "x_reply"
+          : primaryIsX
+            ? "x_post"
+            : "bluesky";
     }
   }
 
@@ -189,7 +228,37 @@ export async function runAutonomousCycle(params?: {
     };
   }
 
-  const isXItem = /^X \/ Twitter$/i.test(plan.item.targetChannel);
+  if (planKind === "x_reply") {
+    const xStatus = await new XSocialService().status();
+    if (!xStatus.enabled || !xStatus.reachable || !xStatus.authenticated) {
+      return {
+        status: "blocked",
+        reason: "X / Twitter is not ready for autonomous publishing.",
+        channelStatus: xStatus,
+        xReview,
+        ...(autodraft ? { autodraft } : {}),
+      };
+    }
+    const result = await service.publishXReply({
+      id: plan.item.id,
+      variant: plan.chosenVariant,
+      approval: `autonomously published by Xiaoxiong at ${new Date().toISOString()}`,
+      dryRun,
+    });
+
+    return {
+      status: dryRun ? "dry_run" : "published",
+      id: result.item.id,
+      channel: "X Reply",
+      chosenVariant: result.chosenVariant,
+      uri: result.publish.url ?? null,
+      text: result.publish.text,
+      xReview,
+      ...(autodraft ? { autodraft } : {}),
+    };
+  }
+
+  const isXItem = planKind === "x_post" && /^X \/ Twitter$/i.test(plan.item.targetChannel);
   if (isXItem) {
     const xStatus = await new XSocialService().status();
     if (!xStatus.enabled || !xStatus.reachable || !xStatus.authenticated) {
@@ -219,7 +288,6 @@ export async function runAutonomousCycle(params?: {
       ...(autodraft ? { autodraft } : {}),
     };
   }
-
   const bluesky = params?.bluesky ?? new BlueskySocialService();
   const status = await bluesky.status();
   if (!status.enabled || !status.configured || !status.authenticated) {

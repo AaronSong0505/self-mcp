@@ -22,6 +22,8 @@ type XSocialConfigDoc = {
   defaultSearchMode?: XSearchMode;
   bootstrapScript?: string;
   bootstrapTimeoutMs?: number;
+  userDataDir?: string;
+  chromeExecutablePath?: string;
 };
 
 type RuntimeConfig = {
@@ -31,6 +33,8 @@ type RuntimeConfig = {
   defaultSearchMode: XSearchMode;
   bootstrapScript?: string;
   bootstrapTimeoutMs: number;
+  userDataDir: string;
+  chromeExecutablePath?: string;
 };
 
 export type XStatusResult = {
@@ -55,6 +59,12 @@ export type XPostSummary = {
 export type XFeedResult = {
   source: string;
   items: XPostSummary[];
+};
+
+export type XReviewSnapshotResult = {
+  status: XStatusResult;
+  home: XFeedResult;
+  searches: Array<{ topic: string; result: XFeedResult }>;
 };
 
 export type XThreadResult = {
@@ -98,6 +108,12 @@ function readConfigDoc(): XSocialConfigDoc {
 
 function loadRuntimeConfig(): RuntimeConfig {
   const doc = readConfigDoc();
+  const defaultUserDataDir = path.join(
+    process.env.LOCALAPPDATA || "C:/Users/Public/AppData/Local",
+    "openclaw",
+    "browser",
+    "openclaw-profile",
+  );
   return {
     enabled: doc.enabled !== false,
     cdpUrl: doc.cdpUrl?.trim() || process.env.X_SOCIAL_CDP_URL?.trim() || "http://127.0.0.1:18800",
@@ -108,6 +124,14 @@ function loadRuntimeConfig(): RuntimeConfig {
       process.env.X_SOCIAL_BOOTSTRAP_SCRIPT?.trim() ||
       "D:/tools_work/one-company/openclaw/scripts/open-x-social.ps1",
     bootstrapTimeoutMs: Math.max(15000, doc.bootstrapTimeoutMs ?? 45000),
+    userDataDir:
+      doc.userDataDir?.trim() ||
+      process.env.X_SOCIAL_USER_DATA_DIR?.trim() ||
+      defaultUserDataDir,
+    chromeExecutablePath:
+      doc.chromeExecutablePath?.trim() ||
+      process.env.X_SOCIAL_CHROME_EXECUTABLE?.trim() ||
+      undefined,
   };
 }
 
@@ -264,6 +288,20 @@ async function findPublishedPostOnProfile(params: {
 
 const execFileAsync = promisify(execFile);
 
+function resolveChromeExecutablePath(explicitPath?: string) {
+  const candidates = [
+    explicitPath,
+    process.env.CHROME_BIN,
+    "C:/Program Files/Google/Chrome/Application/chrome.exe",
+    "C:/Program Files (x86)/Google/Chrome/Application/chrome.exe",
+    process.env.LOCALAPPDATA
+      ? path.join(process.env.LOCALAPPDATA, "Google/Chrome/Application/chrome.exe")
+      : undefined,
+  ].filter(Boolean) as string[];
+
+  return candidates.find((candidate) => fs.existsSync(candidate));
+}
+
 async function maybeBootstrapXBrowser(config: RuntimeConfig) {
   const script = config.bootstrapScript?.trim();
   if (!script || !fs.existsSync(script)) {
@@ -290,20 +328,98 @@ async function maybeBootstrapXBrowser(config: RuntimeConfig) {
   }
 }
 
+function toPowerShellSingleQuoted(value: string) {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+function extractPortFromCdpUrl(cdpUrl: string) {
+  const match = cdpUrl.match(/:(\d+)(?:\/|$)/);
+  return match ? Number(match[1]) : undefined;
+}
+
+async function stopStaleChromeProcesses(config: RuntimeConfig) {
+  const port = extractPortFromCdpUrl(config.cdpUrl);
+  const profileDir = toPowerShellSingleQuoted(config.userDataDir);
+  const command = [
+    `$profileDir = ${profileDir}`,
+    ...(port ? [`$port = ${port}`] : []),
+    "Get-CimInstance Win32_Process -Filter \"name = 'chrome.exe'\" |",
+    "Where-Object {",
+    "  $_.CommandLine -and (",
+    ...(port
+      ? [
+          `    $_.CommandLine -like "*--remote-debugging-port=$port*" -or`,
+        ]
+      : []),
+    "    $_.CommandLine -like (\"*\" + $profileDir + \"*\")",
+    "  )",
+    "} |",
+    "ForEach-Object {",
+    "  try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop } catch {}",
+    "}",
+  ].join("\n");
+  await execFileAsync(
+    "powershell",
+    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+    {
+      timeout: 15000,
+      windowsHide: true,
+    },
+  ).catch(() => undefined);
+  await new Promise((resolve) => setTimeout(resolve, 1200));
+}
+
+async function launchPersistentWithRetry(config: RuntimeConfig, originalError: unknown) {
+  const executablePath = resolveChromeExecutablePath(config.chromeExecutablePath);
+  if (!executablePath) {
+    throw originalError;
+  }
+  fs.mkdirSync(config.userDataDir, { recursive: true });
+  let lastError: unknown = originalError;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      return await chromium.launchPersistentContext(config.userDataDir, {
+        executablePath,
+        headless: false,
+        args: [
+          "--new-window",
+          "--no-first-run",
+          "--no-default-browser-check",
+        ],
+      });
+    } catch (error) {
+      lastError = error;
+      if (attempt === 0) {
+        await stopStaleChromeProcesses(config);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+  }
+  throw lastError;
+}
+
 async function withBrowserPage<T>(cdpUrl: string, fn: (page: Page, context: BrowserContext) => Promise<T>) {
   const config = loadRuntimeConfig();
   let browser;
+  let context: BrowserContext | undefined;
+  let launchedPersistent = false;
   try {
     browser = await chromium.connectOverCDP(cdpUrl);
   } catch (error) {
-    const bootstrapped = await maybeBootstrapXBrowser(config);
-    if (!bootstrapped) {
-      throw error;
+    try {
+      context = await launchPersistentWithRetry(config, error);
+      launchedPersistent = true;
+    } catch (fallbackError) {
+      const bootstrapped = await maybeBootstrapXBrowser(config);
+      if (bootstrapped) {
+        browser = await chromium.connectOverCDP(cdpUrl);
+      } else {
+        throw fallbackError;
+      }
     }
-    browser = await chromium.connectOverCDP(cdpUrl);
   }
   try {
-    const context = browser.contexts()[0] ?? (await browser.newContext());
+    context = context ?? browser!.contexts()[0] ?? (await browser!.newContext());
     const page = await context.newPage();
     try {
       return await fn(page, context);
@@ -311,7 +427,11 @@ async function withBrowserPage<T>(cdpUrl: string, fn: (page: Page, context: Brow
       await page.close().catch(() => undefined);
     }
   } finally {
-    await browser.close().catch(() => undefined);
+    if (launchedPersistent) {
+      await context?.close().catch(() => undefined);
+    } else {
+      await browser?.close().catch(() => undefined);
+    }
   }
 }
 
@@ -400,6 +520,55 @@ export class XSocialService {
       return {
         source: `search:${params.q.trim()}`,
         items,
+      };
+    });
+  }
+
+  async reviewSnapshot(params: {
+    homeLimit?: number;
+    searchLimit?: number;
+    searchTopics?: string[];
+    mode?: string;
+  }): Promise<XReviewSnapshotResult> {
+    const homeLimit = Math.min(Math.max(params.homeLimit ?? 5, 1), 20);
+    const searchLimit = Math.min(Math.max(params.searchLimit ?? 3, 1), 20);
+    const mode = coerceXSearchMode(params.mode || this.config.defaultSearchMode);
+    const topics = (params.searchTopics ?? []).map((topic) => topic.trim()).filter(Boolean);
+
+    return withBrowserPage(this.config.cdpUrl, async (page) => {
+      await ensureHomePage(page);
+      const snapshot = await extractStatus(page);
+      const home: XFeedResult = {
+        source: "home",
+        items: await extractPosts(page, homeLimit),
+      };
+      const searches: Array<{ topic: string; result: XFeedResult }> = [];
+      for (const topic of topics) {
+        await page.goto(buildXSearchUrl(topic, mode), {
+          waitUntil: "domcontentloaded",
+          timeout: 60000,
+        });
+        await waitForXPageReady(page);
+        searches.push({
+          topic,
+          result: {
+            source: `search:${topic}`,
+            items: await extractPosts(page, searchLimit),
+          },
+        });
+      }
+      return {
+        status: {
+          enabled: true,
+          reachable: true,
+          authenticated: snapshot.authenticated,
+          cdpUrl: this.config.cdpUrl,
+          activeChannelLabel: this.config.activeChannelLabel,
+          ...(snapshot.currentUrl ? { currentUrl: snapshot.currentUrl } : {}),
+          ...(snapshot.handle ? { handle: snapshot.handle } : {}),
+        },
+        home,
+        searches,
       };
     });
   }

@@ -369,6 +369,7 @@ export async function runXReviewCycle(params?: {
   service?: SocialOutboxService;
   xService?: XSocialService;
   config?: LoadedXCycleConfig;
+  analysisOverride?: XReviewModelOutput;
 }): Promise<XReviewCycleResult> {
   const config = params?.config ?? loadXCycleConfig();
   if (!config.enabled) {
@@ -392,36 +393,69 @@ export async function runXReviewCycle(params?: {
   }
 
   const xService = params?.xService ?? new XSocialService();
-  const xStatus = await xService.status();
-  if (!xStatus.enabled || !xStatus.reachable || !xStatus.authenticated) {
-    return {
-      status: "blocked",
-      reason: "X lane is not ready for autonomous review.",
-      xStatus,
-    };
-  }
-
-  const home = await xService.homeFeed({ limit: config.homeLimit });
-  const searches = await Promise.all(
-    config.searchTopics.map(async (topic) => ({
-      topic,
-      result: await xService.searchPosts({
-        q: topic,
-        limit: config.searchLimit,
+  let xStatus;
+  let home: XFeedResult;
+  let searches: Array<{ topic: string; result: XFeedResult }>;
+  if (typeof (xService as XSocialService & { reviewSnapshot?: unknown }).reviewSnapshot === "function") {
+    try {
+      const snapshot = await (xService as XSocialService).reviewSnapshot({
+        homeLimit: config.homeLimit,
+        searchLimit: config.searchLimit,
+        searchTopics: config.searchTopics,
         mode: "latest",
-      }),
-    })),
-  );
+      });
+      xStatus = snapshot.status;
+      home = snapshot.home;
+      searches = snapshot.searches;
+    } catch (error) {
+      return {
+        status: "blocked",
+        reason: "X lane is not ready for autonomous review.",
+        xStatus: {
+          enabled: true,
+          reachable: false,
+          authenticated: false,
+          cdpUrl: "http://127.0.0.1:18800",
+          activeChannelLabel: "X / Twitter",
+          lastError: error instanceof Error ? error.message : String(error),
+        },
+      };
+    }
+  } else {
+    xStatus = await xService.status();
+    if (!xStatus.enabled || !xStatus.reachable || !xStatus.authenticated) {
+      return {
+        status: "blocked",
+        reason: "X lane is not ready for autonomous review.",
+        xStatus,
+      };
+    }
+
+    home = await xService.homeFeed({ limit: config.homeLimit });
+    searches = await Promise.all(
+      config.searchTopics.map(async (topic) => ({
+        topic,
+        result: await xService.searchPosts({
+          q: topic,
+          limit: config.searchLimit,
+          mode: "latest",
+        }),
+      })),
+    );
+  }
 
   const workspaceRoot = resolveWorkspaceRoot();
   const analysis =
-    (await analyzeXSignals({
-      config,
-      home,
-      searches,
-      workspaceRoot,
-    }).catch(() => undefined)) ??
-    fallbackAnalysis({ home, searches });
+    params?.analysisOverride ??
+    ((
+      await analyzeXSignals({
+        config,
+        home,
+        searches,
+        workspaceRoot,
+      }).catch(() => undefined)
+    ) ??
+      fallbackAnalysis({ home, searches }));
 
   const timestamp = nowLabel();
   const observationLines = buildObservationLines({
@@ -455,41 +489,39 @@ export async function runXReviewCycle(params?: {
     }
   }
 
-  if (
-    !params?.dryRun &&
-    config.allowAutonomousDrafts &&
-    analysis.action &&
-    analysis.action !== "observe" &&
-    analysis.draft
-  ) {
+  if (!params?.dryRun && config.allowAutonomousDrafts && analysis.action && analysis.action !== "observe" && analysis.draft) {
     const recipe = normalizeRecipe(analysis.draft, config.maxDraftChars);
     const service = params?.service ?? SocialOutboxService.createFromEnv();
-    const existingXDraft = service
+    const existingXWork = service
       .listItems({ status: "all" })
       .items.some(
         (item) =>
-          /x\s*\/\s*twitter/i.test(item.targetChannel) &&
-          (item.status === "draft" || item.status === "scheduled" || item.status === "sending"),
+          (/^X \/ Twitter$/i.test(item.targetChannel) || /^X Reply$/i.test(item.targetChannel)) &&
+          (item.status === "draft" || item.status === "scheduled" || item.status === "sending" || item.status === "approved"),
       );
 
-    if (!existingXDraft) {
+    if (!existingXWork) {
       const sourceSuffix =
         analysis.action === "draft_reply" && analysis.draftTargetUrl
           ? ` / thread ${analysis.draftTargetUrl.trim()}`
           : "";
+      const isReply = analysis.action === "draft_reply" && Boolean(analysis.draftTargetUrl?.trim());
       const packet = service.createDraftItem({
         title: recipe.title,
+        targetChannel: isReply ? "X Reply" : "X / Twitter",
+        targetUrl: isReply ? analysis.draftTargetUrl?.trim() ?? "" : "",
         variants: recipe.variants,
         intent: recipe.intent,
         source: `${recipe.source}${sourceSuffix}`.trim(),
         whyItMatters: recipe.whyItMatters,
-        targetChannel: "X / Twitter",
-        status: "draft",
-        delivery: "not started",
-        nextStep:
-          analysis.action === "draft_reply"
-            ? "decide whether this X reply should become a real browser-lane action"
-            : "decide whether this X post should mature into a real outbound action",
+        status: "scheduled",
+        approval: "not needed",
+        delivery: isReply
+          ? "scheduled for deterministic X reply flow"
+          : "scheduled for deterministic X publish flow",
+        nextStep: isReply
+          ? "publish the strongest reply variant if the thread still deserves an answer"
+          : "publish the strongest X post variant when cadence and lane health allow",
       });
       draftId = packet.item.id;
       draftAction = analysis.action;

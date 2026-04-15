@@ -123,4 +123,76 @@ describe("x review cycle", () => {
     expect(fs.readFileSync(path.join(root, "SOCIAL_OBSERVATIONS.md"), "utf8")).toContain("X review");
     expect(fs.readFileSync(path.join(root, "SOCIAL_LESSONS.md"), "utf8")).toContain("reading the thread before reacting matters");
   });
+
+  it("creates a scheduled X reply item when the review loop decides a thread deserves an answer", async () => {
+    const root = createWorkspaceRoot();
+    const outboxPath = path.join(root, "OUTBOX.md");
+    const draftsPath = path.join(root, "SOCIAL_DRAFTS.md");
+    const postsPath = path.join(root, "SOCIAL_POSTS.md");
+    process.env.X_SOCIAL_ROOT = root;
+    process.env.X_SOCIAL_CONFIG_DIR = path.join(root, "config");
+    process.env.X_SOCIAL_DATA_DIR = path.join(root, "data");
+    process.env.SOCIAL_OUTBOX_PATH = outboxPath;
+    process.env.SELF_MCP_DISABLE_LLM = "1";
+
+    const service = new SocialOutboxService(outboxPath, draftsPath, postsPath, {
+      async previewPost() {
+        throw new Error("preview not expected");
+      },
+      async publishPost() {
+        throw new Error("publish not expected");
+      },
+    });
+
+    const xService = {
+      async status() {
+        return {
+          enabled: true,
+          reachable: true,
+          authenticated: true,
+          cdpUrl: "http://127.0.0.1:18800",
+          activeChannelLabel: "X / Twitter",
+          handle: "AaronSong98",
+        };
+      },
+      async homeFeed() {
+        return { source: "home", items: [] };
+      },
+      async searchPosts() {
+        return { source: "search:test", items: [] };
+      },
+    };
+
+    const result = await runXReviewCycle({
+      dryRun: false,
+      service,
+      xService: xService as any,
+      analysisOverride: {
+        observationLines: ["A thread deserves a careful answer."],
+        lesson: "A good reply should narrow the argument, not widen it.",
+        action: "draft_reply",
+        draftTargetUrl: "https://x.com/someone/status/1234567890",
+        draft: {
+          title: "Thread reply candidate",
+          intent: "answer one thread with a grounded clarification",
+          source: "x review",
+          whyItMatters: "the thread is close to something useful but still fuzzy",
+          variants: [
+            { label: "A", text: "这条我同意一半，关键还是看真实交付链路。" },
+            { label: "B", text: "讨论到这里，最值得补的一句还是：先把真实交付链路看清楚，再下结论。" },
+          ],
+        },
+      },
+    });
+
+    expect(result.status).toBe("reviewed");
+    if (result.status !== "reviewed") {
+      throw new Error(`Expected reviewed result, got ${result.status}`);
+    }
+    expect(result.draftAction).toBe("draft_reply");
+    const outbox = fs.readFileSync(outboxPath, "utf8");
+    expect(outbox).toContain("Target channel: X Reply");
+    expect(outbox).toContain("Target URL: https://x.com/someone/status/1234567890");
+    expect(outbox).toContain("Status: scheduled");
+  });
 });

@@ -1137,6 +1137,21 @@ export class SocialOutboxService {
     });
   }
 
+  planNextAutonomousXReply(params: {
+    defaultVariant?: string;
+    minHoursBetweenReplies?: number;
+    startHour?: number;
+    endHour?: number;
+  } = {}): AutopublishPlanResult {
+    return this.planNextAutonomousChannel({
+      channelPattern: /^X Reply$/i,
+      defaultVariant: params.defaultVariant,
+      minHoursBetweenPosts: params.minHoursBetweenReplies,
+      startHour: params.startHour,
+      endHour: params.endHour,
+    });
+  }
+
   upsertItem(params: UpsertOutboxParams) {
     const items = this.readItems();
     const index = items.findIndex((item) => item.id === params.id);

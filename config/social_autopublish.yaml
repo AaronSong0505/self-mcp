@@ -2,6 +2,7 @@ enabled: true
 startHour: 10
 endHour: 21
 minHoursBetweenPosts: 8
+minHoursBetweenReplies: 2
 defaultVariant: B
 primaryChannel: X / Twitter
 secondaryChannel: Bluesky
