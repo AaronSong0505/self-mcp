@@ -22,7 +22,11 @@ function createTempRoots() {
   fs.mkdirSync(sessionsRoot, { recursive: true });
   fs.writeFileSync(path.join(openclawRoot, "scripts", "openclaw.ps1"), "# mock", "utf8");
   fs.writeFileSync(path.join(workspaceRoot, "MEMORY.md"), "Aaron and Faye are a warm household.", "utf8");
-  fs.writeFileSync(path.join(workspaceRoot, "RELATIONSHIPS.md"), "Faye is the family co-owner.", "utf8");
+  fs.writeFileSync(
+    path.join(workspaceRoot, "RELATIONSHIPS.md"),
+    "Faye is the family co-owner. When she is vulnerable, use gentleness over analysis and avoid generic comfort.",
+    "utf8",
+  );
   fs.writeFileSync(path.join(workspaceRoot, "USER.md"), "Aaron and Faye live in Shanghai.", "utf8");
   fs.writeFileSync(path.join(workspaceRoot, "memory", "2026-04-03.md"), "- Aaron and Faye are having a busy day.\n", "utf8");
   fs.writeFileSync(
@@ -54,11 +58,7 @@ function createTempRoots() {
 `,
     "utf8",
   );
-  fs.writeFileSync(
-    path.join(configDir, "wechat_sources.yaml"),
-    "sources: []\n",
-    "utf8",
-  );
+  fs.writeFileSync(path.join(configDir, "wechat_sources.yaml"), "sources: []\n", "utf8");
   fs.writeFileSync(
     path.join(configDir, "wechat_love_note.yaml"),
     `enabled: true
@@ -111,6 +111,8 @@ describe("wechat love note service", () => {
     expect(result.status).toBe("dry_run");
     expect(result.targetId).toBe("faye-wechat");
     expect(result.content).toContain("Aaron");
+    expect(result.content).not.toMatch(/喝口水|吃点东西|好好休息/);
+    expect(result.content).toMatch(/惦记|放在心上|在你这边|抱你|偏向你/);
   });
 
   it("does not send twice once a note for the same day is already marked sent", async () => {
@@ -183,5 +185,62 @@ describe("wechat love note service", () => {
     expect(result.status).toBe("stale_target");
     expect(result.sentCount).toBe(0);
     expect(result.error).toContain("Last direct activity was 2026-04-03T08:00:00.000Z");
+  });
+
+  it("uses recent direct-lane context instead of generic reminders when available", async () => {
+    const { root, configDir, dataDir, openclawRoot } = createTempRoots();
+    process.env.WECHAT_DIGEST_ROOT = root;
+    process.env.WECHAT_DIGEST_CONFIG_DIR = configDir;
+    process.env.WECHAT_DIGEST_DATA_DIR = dataDir;
+    process.env.OPENCLAW_CLI_WRAPPER = path.join(openclawRoot, "scripts", "openclaw.ps1");
+    fs.writeFileSync(
+      path.join(openclawRoot, "workspace", "memory", "2026-04-03.md"),
+      "- Faye has a company physical exam today.\n",
+      "utf8",
+    );
+    fs.writeFileSync(
+      path.join(openclawRoot, ".openclaw-state", "agents", "main", "sessions", "07b64d82-7181-4157-bd76-25ebcb20050a.jsonl"),
+      [
+        JSON.stringify({
+          message: {
+            role: "user",
+            content: [{ type: "text", text: "Conversation info (untrusted metadata):\n```json\n{}\n```\n\n我今天有点担心公司年检。"}],
+          },
+        }),
+      ].join("\n"),
+      "utf8",
+    );
+    fs.writeFileSync(
+      path.join(openclawRoot, ".openclaw-state", "agents", "main", "sessions", "sessions.json"),
+      JSON.stringify(
+        {
+          "agent:main:openclaw-weixin:sample-account:direct:sample-faye@im.wechat": {
+            origin: {
+              provider: "openclaw-weixin",
+              chatType: "direct",
+              accountId: "sample-account",
+              to: "sample-faye@im.wechat",
+            },
+            sessionId: "07b64d82-7181-4157-bd76-25ebcb20050a",
+            updatedAt: Date.now() - 30 * 60 * 1000,
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const service = await WechatLoveNoteService.create();
+    const result = await service.run({
+      date: "2026-04-03",
+      dryRun: true,
+      force: true,
+    });
+
+    expect(result.status).toBe("dry_run");
+    expect(result.content).toContain("Aaron");
+    expect(result.content).toMatch(/体检|检查|不是一个人面对|发虚/);
+    expect(result.content).not.toMatch(/喝口水|吃点东西/);
   });
 });

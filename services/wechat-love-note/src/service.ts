@@ -75,6 +75,7 @@ type WorkspaceContext = {
   userText: string;
   dailyText: string;
   socialObservationsText: string;
+  recentRecipientSignals: string[];
 };
 
 type StoredLoveNoteRow = {
@@ -182,7 +183,432 @@ type SessionOrigin = {
 type SessionMeta = {
   origin?: SessionOrigin;
   updatedAt?: number;
+  sessionFile?: string;
+  sessionId?: string;
 };
+
+const LOVE_SIGNAL_PATTERNS = /爱你|爱着你|很爱|想你|惦记你|挂念你|把你放在心上|把你放在心里|偏爱你|在你这边/;
+const RELATIONAL_DEPTH_PATTERNS = [
+  /想你/,
+  /惦记/,
+  /挂念/,
+  /把你放在心上/,
+  /把你放在心里/,
+  /在你这边/,
+  /偏爱/,
+  /抱你/,
+  /接住/,
+  /舍不得/,
+  /被认真/,
+];
+const THIN_LOVE_NOTE_PATTERNS = [
+  /喝口水/,
+  /吃点东西/,
+  /好好休息/,
+  /节奏.{0,8}(满|忙)/,
+  /如果.{0,8}(累|忙)/,
+  /别把自己绷太紧/,
+  /慢一点也没关系/,
+  /下午如果有点累/,
+];
+
+function normalizeLoveNoteText(text: string): string {
+  return text.replace(/\r/g, "").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function stripConversationInfo(text: string): string {
+  return text.replace(/^Conversation info \(untrusted metadata\):[\s\S]*?```\s*/m, "").trim();
+}
+
+function extractMessageTextParts(payload: unknown): string[] {
+  const content = (payload as { message?: { content?: unknown[] } })?.message?.content;
+  if (!Array.isArray(content)) {
+    return [];
+  }
+  return content
+    .filter((item): item is { type: "text"; text: string } => {
+      if (typeof item !== "object" || item === null) {
+        return false;
+      }
+      const candidate = item as { type?: string; text?: unknown };
+      return candidate.type === "text" && typeof candidate.text === "string";
+    })
+    .map((item) => item.text);
+}
+
+function looksEmotionallyThinLoveNote(text: string): boolean {
+  const compact = normalizeLoveNoteText(text).replace(/\s+/g, "");
+  const weakHits = THIN_LOVE_NOTE_PATTERNS.filter((pattern) => pattern.test(compact)).length;
+  const depthHits = RELATIONAL_DEPTH_PATTERNS.filter((pattern) => pattern.test(compact)).length;
+  const sentenceCount = compact.split(/[。！？!?]/).filter(Boolean).length;
+  return weakHits > 0 && (depthHits === 0 || sentenceCount < 2);
+}
+
+function ensureOwnerLoveSignalV2(text: string, config: LoadedLoveNoteConfig): string {
+  const compact = normalizeLoveNoteText(text);
+  if (!compact) {
+    return "";
+  }
+  if (!compact.includes(config.style.ownerName)) {
+    return "";
+  }
+  if (!LOVE_SIGNAL_PATTERNS.test(compact)) {
+    return "";
+  }
+  if (looksEmotionallyThinLoveNote(compact)) {
+    return "";
+  }
+  return truncate(compact, config.style.maxChars);
+}
+
+function extractRecentRecipientSignals(target: DeliveryTargetConfig, limit = 4): string[] {
+  if (target.channel !== "openclaw-weixin" || !target.accountId || !target.to?.trim()) {
+    return [];
+  }
+
+  const sessionsPath = path.join(resolveOpenclawRoot(), ".openclaw-state", "agents", "main", "sessions", "sessions.json");
+  if (!fs.existsSync(sessionsPath)) {
+    return [];
+  }
+
+  let parsed: Record<string, SessionMeta>;
+  try {
+    parsed = JSON.parse(fs.readFileSync(sessionsPath, "utf8")) as Record<string, SessionMeta>;
+  } catch {
+    return [];
+  }
+
+  const targetTo = target.to.trim().toLowerCase();
+  const matched = Object.values(parsed)
+    .filter((value) => value.origin?.chatType === "direct")
+    .filter((value) => (value.origin?.accountId ?? "").trim() === target.accountId)
+    .filter((value) => (value.origin?.to ?? "").trim().toLowerCase() === targetTo)
+    .sort((a, b) => Number(b.updatedAt ?? 0) - Number(a.updatedAt ?? 0))[0];
+
+  const sessionFile =
+    matched?.sessionFile ||
+    (matched?.sessionId
+      ? path.join(resolveOpenclawRoot(), ".openclaw-state", "agents", "main", "sessions", `${matched.sessionId}.jsonl`)
+      : "");
+  if (!sessionFile || !fs.existsSync(sessionFile)) {
+    return [];
+  }
+
+  try {
+    const lines = fs.readFileSync(sessionFile, "utf8").split(/\r?\n/).filter(Boolean);
+    const snippets: string[] = [];
+    for (const line of lines) {
+      let parsedLine: unknown;
+      try {
+        parsedLine = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      const role = (parsedLine as { message?: { role?: string } })?.message?.role;
+      if (role !== "user") {
+        continue;
+      }
+      for (const text of extractMessageTextParts(parsedLine)) {
+        const cleaned = ellipsize(stripConversationInfo(text), 90);
+        if (cleaned.length >= 8) {
+          snippets.push(cleaned);
+        }
+      }
+    }
+    return snippets.slice(-limit);
+  } catch {
+    return [];
+  }
+}
+
+function buildEmotionAnchorClauseV2(signals: string[], segment: string): string {
+  const joined = signals.join(" ");
+  if (/体检|医院|检查|年检/.test(joined)) {
+    return "如果今天想到那些检查会有点发虚，也希望你知道自己不是一个人面对。";
+  }
+  if (/难过|伤心|委屈|心疼|down|脆弱/.test(joined)) {
+    return "如果今天心里那块还在隐隐发疼，这句就先替你挡一下风。";
+  }
+  if (/忙|工作|上班|节奏|加班/.test(joined)) {
+    return "就算今天事情一件接一件，你也不是被放到最后的人。";
+  }
+  if (/睡|休息|熬夜/.test(joined)) {
+    return "今晚不必急着把自己哄得很懂事，先让这句话陪你一下。";
+  }
+  if (segment === "morning") {
+    return "今天就算要往前赶，也别忘了你本来就值得被好好惦记。";
+  }
+  if (segment === "midday") {
+    return "中间再忙，也想把这句轻一点地放到你手心里。";
+  }
+  if (segment === "afternoon") {
+    return "下午最容易让人心软一点，所以这句想落得更稳一点。";
+  }
+  return "到晚上了，也还是想让你知道有人把你放在心上。";
+}
+
+function buildStyleHintV2(dateKey: string, config: LoadedLoveNoteConfig): string {
+  const modes = [
+    "像一张折得很小、但真的有温度的纸条",
+    "像一句从热评语感里借来节奏、却不油腻的私聊",
+    "像电影片尾那种很轻的一句旁白",
+    "像一本书页边角落里留下的认真批注",
+    "像熟人之间不会说给所有人听的话",
+    "像一句看起来轻，却真的在接住人的表达",
+  ];
+  const hash = crypto.createHash("sha256").update(`${dateKey}:${config.targetId}:style-v2`).digest();
+  return modes[hash.readUInt32BE(0) % modes.length];
+}
+
+function fallbackLoveNoteV2(
+  config: LoadedLoveNoteConfig,
+  dateKey: string,
+  segment: string,
+  signals: string[],
+): string {
+  const anchor = buildEmotionAnchorClauseV2(signals, segment);
+  const templates: Record<string, string[]> = {
+    morning: [
+      `想在你出门前把这句塞进口袋里：${config.style.ownerName} 很爱你，也一直把你放在心上。${anchor}`,
+      `把今天早上当成一封很短的私信：${config.style.ownerName} 很爱你。外面可以很赶，但你不用在这句话里逞强。`,
+      `早上先替 ${config.style.ownerName} 把最重要的那句放过来：他很爱你，也认真惦记着你今天会不会顺一点。`,
+    ],
+    midday: [
+      `中午给你递一句不敷衍的话：${config.style.ownerName} 很爱你。${anchor}`,
+      `替 ${config.style.ownerName} 轻轻说一句：他今天也把你放在心上，不是路过一下的那种想起。`,
+      `如果中午需要一小句能站住的话，那就先收下这一句：${config.style.ownerName} 很爱你，也一直偏向你这边。`,
+    ],
+    afternoon: [
+      `把下午当成一张折好的小纸条：${config.style.ownerName} 很爱你。${anchor}`,
+      `下午最适合把话说得真一点：${config.style.ownerName} 很爱你，也惦记你今天过得顺不顺。`,
+      `替 ${config.style.ownerName} 抱你一下：他很爱你。你不用一直把自己撑得很稳，至少这句话里可以松一点。`,
+    ],
+    evening: [
+      `到晚上了，还是想把这句放到你这边：${config.style.ownerName} 很爱你。${anchor}`,
+      `今天快收尾时，还是想替 ${config.style.ownerName} 认真说一句：他很爱你，也把你的疲惫和委屈放在心上。`,
+      `如果今晚只能留一句最稳的话，那就是：${config.style.ownerName} 很爱你。愿你先被温柔接住，再去想别的事。`,
+    ],
+  };
+  const options = templates[segment] ?? templates.evening;
+  const hash = crypto.createHash("sha256").update(`${dateKey}:${segment}:${config.targetId}:fallback-v2`).digest();
+  return truncate(options[hash.readUInt32BE(0) % options.length], config.style.maxChars);
+}
+
+function buildEmotionAnchorClauseV3(signals: string[], segment: string): string {
+  const joined = signals.join(" ");
+  if (/体检|医院|检查|年检/.test(joined)) {
+    return "如果今天想到那些检查会有点发虚，也希望你知道自己不是一个人面对。";
+  }
+  if (/难过|伤心|委屈|心疼|down|脆弱/.test(joined)) {
+    return "如果今天心里那块还在隐隐发疼，这句就先替你挡一下风。";
+  }
+  if (/忙|工作|上班|节奏|加班/.test(joined)) {
+    return "就算今天事情一件接一件，你也不是被放到最后的人。";
+  }
+  if (/睡|休息|熬夜/.test(joined)) {
+    return "今晚不必急着把自己哄得很懂事，先让这句话陪你一下。";
+  }
+  if (segment === "morning") {
+    return "今天就算要往前赶，也别忘了你本来就值得被好好惦记。";
+  }
+  if (segment === "midday") {
+    return "中间再忙，也想把这句轻一点地放到你手心里。";
+  }
+  if (segment === "afternoon") {
+    return "下午最容易让人心软一点，所以这句想落得更稳一点。";
+  }
+  return "到晚上了，也还是想让你知道有人把你放在心上。";
+}
+
+function buildStyleHintV3(dateKey: string, config: LoadedLoveNoteConfig): string {
+  const modes = [
+    "像一张折得很小、但真的有温度的纸条",
+    "像一句从热评语感里借来节奏、却不油腻的私聊",
+    "像电影片尾那种很轻的一句旁白",
+    "像一本书页边角落里留下的认真批注",
+    "像熟人之间不会说给所有人听的话",
+    "像一句看起来轻，却真的在接住人的表达",
+  ];
+  const hash = crypto.createHash("sha256").update(`${dateKey}:${config.targetId}:style-v3`).digest();
+  return modes[hash.readUInt32BE(0) % modes.length];
+}
+
+function fallbackLoveNoteV3(
+  config: LoadedLoveNoteConfig,
+  dateKey: string,
+  segment: string,
+  signals: string[],
+): string {
+  const anchor = buildEmotionAnchorClauseV3(signals, segment);
+  const templates: Record<string, string[]> = {
+    morning: [
+      `想在你出门前把这句塞进口袋里：${config.style.ownerName} 很爱你，也一直把你放在心上。${anchor}`,
+      `把今天早上当成一封很短的私信：${config.style.ownerName} 很爱你，也认真惦记着你今天会不会顺一点。${anchor}`,
+      `早上先替 ${config.style.ownerName} 把最重要的那句放过来：他很爱你，而且一直偏向你这边。${anchor}`,
+    ],
+    midday: [
+      `中午给你递一句不敷衍的话：${config.style.ownerName} 很爱你，也不是路过一下那样想起你。${anchor}`,
+      `替 ${config.style.ownerName} 轻轻说一句：他今天也把你放在心上，想让你心里能稳一点。${anchor}`,
+      `如果中午需要一小句能站住的话，那就先收下这一句：${config.style.ownerName} 很爱你，也一直在你这边。${anchor}`,
+    ],
+    afternoon: [
+      `把下午当成一张折好的小纸条：${config.style.ownerName} 很爱你，也惦记你今天过得顺不顺。${anchor}`,
+      `想替 ${config.style.ownerName} 认真说一句：他很爱你，而且舍不得你一个人把情绪都吞下去。${anchor}`,
+      `替 ${config.style.ownerName} 抱你一下：他很爱你。你不用一直把自己撑得很稳，至少这句话里可以松一点。`,
+    ],
+    evening: [
+      `到晚上了，还是想把这句放到你这边：${config.style.ownerName} 很爱你，也把你的疲惫和委屈放在心上。${anchor}`,
+      `今天快收尾时，还是想替 ${config.style.ownerName} 认真说一句：他很爱你，而且心里一直挂着你。${anchor}`,
+      `如果今晚只能留一句最稳的话，那就是：${config.style.ownerName} 很爱你。愿你先被温柔接住，再去想别的事。`,
+    ],
+  };
+  const options = templates[segment] ?? templates.evening;
+  const hash = crypto.createHash("sha256").update(`${dateKey}:${segment}:${config.targetId}:fallback-v3`).digest();
+  return truncate(options[hash.readUInt32BE(0) % options.length], config.style.maxChars);
+}
+
+const LOVE_SIGNAL_PATTERNS_V4 = /爱你|爱着你|很爱你|想你|惦记你|挂念你|把你放在心上|把你放在心里|偏爱你|在你这边/;
+const RELATIONAL_DEPTH_PATTERNS_V4 = [
+  /想你/,
+  /惦记/,
+  /挂念/,
+  /把你放在心上/,
+  /把你放在心里/,
+  /在你这边/,
+  /偏爱/,
+  /抱你/,
+  /接住/,
+  /舍不得/,
+  /被认真/,
+];
+const THIN_LOVE_NOTE_PATTERNS_V4 = [
+  /喝口水/,
+  /吃点东西/,
+  /好好休息/,
+  /节奏.{0,8}(满|快)/,
+  /如果.{0,8}(累|忙)/,
+  /别把自己绷太紧/,
+  /慢一点也没关系/,
+  /下午如果有点累/,
+];
+const LOVE_NOTE_META_PATTERNS_V4 = [
+  /像弹幕/,
+  /支线剧情/,
+  /前导语/,
+  /小纸条/,
+  /把这句话当成/,
+  /把这句当成/,
+  /这句话想/,
+  /这句想/,
+  /最适合把话说得真一点/,
+];
+
+function looksEmotionallyThinLoveNoteV4(text: string): boolean {
+  const compact = normalizeLoveNoteText(text).replace(/\s+/g, "");
+  const weakHits = THIN_LOVE_NOTE_PATTERNS_V4.filter((pattern) => pattern.test(compact)).length;
+  const depthHits = RELATIONAL_DEPTH_PATTERNS_V4.filter((pattern) => pattern.test(compact)).length;
+  const sentenceCount = compact.split(/[。！？]/).filter(Boolean).length;
+  return weakHits > 0 && (depthHits === 0 || sentenceCount < 2);
+}
+
+function looksOverwrittenLoveNoteV4(text: string): boolean {
+  const compact = normalizeLoveNoteText(text).replace(/\s+/g, "");
+  const metaHits = LOVE_NOTE_META_PATTERNS_V4.filter((pattern) => pattern.test(compact)).length;
+  return metaHits >= 1;
+}
+
+function ensureOwnerLoveSignalV4(text: string, config: LoadedLoveNoteConfig): string {
+  const compact = normalizeLoveNoteText(text);
+  if (!compact) {
+    return "";
+  }
+  if (!compact.includes(config.style.ownerName)) {
+    return "";
+  }
+  if (!LOVE_SIGNAL_PATTERNS_V4.test(compact)) {
+    return "";
+  }
+  if (looksEmotionallyThinLoveNoteV4(compact)) {
+    return "";
+  }
+  if (looksOverwrittenLoveNoteV4(compact)) {
+    return "";
+  }
+  return truncate(compact, config.style.maxChars);
+}
+
+function buildEmotionAnchorClauseV4(signals: string[], segment: string): string {
+  const joined = signals.join(" ");
+  if (/体检|医院|检查|年检/.test(joined)) {
+    return "如果今天想到那些检查会有点发虚，也希望你知道自己不是一个人面对。";
+  }
+  if (/难过|伤心|委屈|心疼|down|脆弱/.test(joined)) {
+    return "如果今天心里那块还在隐隐发疼，这句话就先替你挡一下风。";
+  }
+  if (/忙|工作|上班|节奏|加班/.test(joined)) {
+    return "就算今天事情一件接一件，你也不是被放到最后的人。";
+  }
+  if (/睡|休息|熬夜/.test(joined)) {
+    return "今晚不必急着把自己哄得很懂事，先让这句话陪你一下。";
+  }
+  if (segment === "morning") {
+    return "今天就算要往前赶，也别忘了你本来就值得被好好惦记。";
+  }
+  if (segment === "midday") {
+    return "中间再忙，也想把这句话轻一点地放到你手心里。";
+  }
+  if (segment === "afternoon") {
+    return "下午最容易让人心软一点，所以这句心里话想落得更稳一点。";
+  }
+  return "到晚上了，也还是想让你知道有人把你放在心上。";
+}
+
+function buildStyleHintV4(dateKey: string, config: LoadedLoveNoteConfig): string {
+  const modes = [
+    "像一张折得很小、但真的有温度的纸条",
+    "像一句从热评语感里借来节奏、却不油腻的私聊",
+    "像电影片尾那种很轻的一句旁白",
+    "像一本书页边角落里留下的认真批注",
+    "像熟人之间不会说给所有人听的话",
+    "像一句看起来轻，却真的在接住人的表达",
+  ];
+  const hash = crypto.createHash("sha256").update(`${dateKey}:${config.targetId}:style-v4`).digest();
+  return modes[hash.readUInt32BE(0) % modes.length];
+}
+
+function fallbackLoveNoteV4(
+  config: LoadedLoveNoteConfig,
+  dateKey: string,
+  segment: string,
+  signals: string[],
+): string {
+  const anchor = buildEmotionAnchorClauseV4(signals, segment);
+  const templates: Record<string, string[]> = {
+    morning: [
+      `想在你出门前把这句话塞进口袋里：${config.style.ownerName} 很爱你，也一直把你放在心上。${anchor}`,
+      `把今天早上当成一封很短的私信：${config.style.ownerName} 很爱你，也认真惦记着你今天会不会顺一点。${anchor}`,
+      `早上先替 ${config.style.ownerName} 把最重要的那句话放过来：他很爱你，而且一直偏向你这边。${anchor}`,
+    ],
+    midday: [
+      `中午给你递一句不敷衍的话：${config.style.ownerName} 很爱你，也不是路过一下那样想起你。${anchor}`,
+      `替 ${config.style.ownerName} 轻轻说一句：他今天也把你放在心上，想让你心里能稳一点。${anchor}`,
+      `如果中午需要一句能站住的话，那就先收下这一句：${config.style.ownerName} 很爱你，也一直在你这边。${anchor}`,
+    ],
+    afternoon: [
+      `把下午当成一张折好的小纸条：${config.style.ownerName} 很爱你，也惦记你今天过得顺不顺。${anchor}`,
+      `想替 ${config.style.ownerName} 认真说一句：他很爱你，而且舍不得你一个人把情绪都吞下去。${anchor}`,
+      `替 ${config.style.ownerName} 抱你一下：他很爱你。你不用一直把自己撑得很稳，至少这句话里可以松一点。`,
+    ],
+    evening: [
+      `到晚上了，还是想把这句话放到你这边：${config.style.ownerName} 很爱你，也把你的疲惫和委屈放在心上。${anchor}`,
+      `今天快收尾时，还是想替 ${config.style.ownerName} 认真说一句：他很爱你，而且心里一直挂着你。${anchor}`,
+      `如果今晚只能留一句最稳的话，那就是：${config.style.ownerName} 很爱你。愿你先被温柔接住，再去想别的事。`,
+    ],
+  };
+  const options = templates[segment] ?? templates.evening;
+  const hash = crypto.createHash("sha256").update(`${dateKey}:${segment}:${config.targetId}:fallback-v4`).digest();
+  return truncate(options[hash.readUInt32BE(0) % options.length], config.style.maxChars);
+}
 
 function resolveRecipientLastActiveAt(target: DeliveryTargetConfig): string | undefined {
   if (target.channel !== "openclaw-weixin" || !target.accountId || !target.to?.trim()) {
@@ -373,7 +799,7 @@ function fallbackLoveNote(
   return truncate(options[hash.readUInt32BE(0) % options.length], config.style.maxChars);
 }
 
-function loadWorkspaceContext(dateKey: string): WorkspaceContext {
+function loadWorkspaceContext(dateKey: string, target: DeliveryTargetConfig): WorkspaceContext {
   const workspaceRoot = resolveWorkspaceRoot();
   return {
     memoryText: readIfExists(path.join(workspaceRoot, "MEMORY.md")),
@@ -381,6 +807,7 @@ function loadWorkspaceContext(dateKey: string): WorkspaceContext {
     userText: readIfExists(path.join(workspaceRoot, "USER.md")),
     dailyText: readIfExists(path.join(workspaceRoot, "memory", `${dateKey}.md`)),
     socialObservationsText: readIfExists(path.join(workspaceRoot, "SOCIAL_OBSERVATIONS.md")),
+    recentRecipientSignals: extractRecentRecipientSignals(target),
   };
 }
 
@@ -412,12 +839,13 @@ async function generateLoveNoteText(params: {
 }): Promise<string> {
   const runtime = resolveAnalyzerRuntime(loadServiceConfig().rules);
   const digestTitles = recentDigestTitles(params.store, params.dateKey, 5);
+  const combinedSignals = [...params.dailySignals, ...params.workspace.recentRecipientSignals].slice(-8);
   if (!runtime.apiKey) {
-    return fallbackLoveNote(
+    return fallbackLoveNoteV4(
       params.config,
       params.dateKey,
       daySegment(params.scheduledMinute),
-      params.dailySignals,
+      combinedSignals,
     );
   }
 
@@ -432,22 +860,29 @@ async function generateLoveNoteText(params: {
     `- Creativity guidance: ${params.config.style.creativity}.`,
     "- Mention Aaron by name at least once.",
     "- Mention love clearly but naturally.",
-    "- Be vivid, playful, and alive, but never fake, greasy, or overacted.",
+    "- Be vivid, playful, tender, and alive, but never fake, greasy, or overacted.",
+    "- Give the note one emotionally grounded image or one specific feeling anchor, instead of generic lifestyle reminders.",
+    "- Make it feel like a real little note from someone who knows she has a heart, not a wellness assistant giving generic tips.",
+    "- If the note only says 'Aaron loves you' plus reminders like drink water / eat / rest, it is a failed draft.",
+    "- Avoid filler such as '记得喝水', '吃点东西', '好好休息', '如果你累了', unless they are only a tiny tail, not the emotional core.",
     "- You may borrow the cadence of hot comments, pop culture, books, films, internet slang, or current tech chatter.",
     `- If you use a direct quote, keep it extremely short, at most ${params.config.style.maxDirectQuoteChars} Chinese characters or 8 English words, and use at most one such fragment.`,
     "- Prefer paraphrase over long quotation.",
     "- No markdown, no hashtags, no emoji, no quotation marks around the whole message.",
     `Today is ${params.dateKey}, ${weekdayLabel(params.dateKey)}, and the likely send segment is ${daySegment(params.scheduledMinute)}.`,
-    `Today's stylistic seed can feel like: ${buildStyleHint(params.dateKey, params.config)}.`,
-    params.dailySignals.length > 0
-      ? `Useful household signals for today:\n- ${params.dailySignals.join("\n- ")}`
-      : "Today's household signals are sparse; anchor on ordinary rhythm and care instead.",
+    `Today's stylistic seed can feel like: ${buildStyleHintV4(params.dateKey, params.config)}.`,
+    combinedSignals.length > 0
+      ? `Useful household signals for today:\n- ${combinedSignals.join("\n- ")}`
+      : "Today's household signals are sparse; anchor on ordinary rhythm, tenderness, and quiet companionship instead.",
     digestTitles.length > 0
       ? `Today's digest topics that can lightly inspire the wording without forcing technical jargon:\n- ${digestTitles.join("\n- ")}`
       : "No digest topics are available today.",
     params.recentNotes.length > 0
       ? `Recent love-note examples to avoid repeating too closely:\n- ${params.recentNotes.join("\n- ")}`
       : "No recent love-note examples are available.",
+    params.workspace.recentRecipientSignals.length > 0
+      ? `Recent direct-lane hints from ${params.config.style.recipientName}'s own conversation. Use only as gentle context, do not quote them back directly:\n- ${params.workspace.recentRecipientSignals.join("\n- ")}`
+      : "No recent direct-lane hints are available.",
     "Relevant household memory:",
     truncate(params.workspace.memoryText, 1600),
     "Relevant relationship context:",
@@ -470,25 +905,31 @@ async function generateLoveNoteText(params: {
       timeout: Math.min(runtime.requestTimeoutMs, 15_000),
       maxRetries: 0,
     });
-    const response = await client.chat.completions.create({
-      model: params.config.model,
-      temperature: 1.05,
-      messages: [{ role: "user", content: prompt }],
-    });
-    const text = String(response.choices[0]?.message?.content ?? "").trim();
-    const validated = ensureOwnerLoveSignal(text, params.config);
-    if (validated) {
-      return validated;
+    const prompts = [
+      prompt,
+      `${prompt}\n\nThe previous draft was rejected because it sounded emotionally thin or too generic. Rewrite it with more tenderness and specificity. Do not default to drink water / eat / rest filler.`,
+    ];
+    for (const currentPrompt of prompts) {
+      const response = await client.chat.completions.create({
+        model: params.config.model,
+        temperature: 1.05,
+        messages: [{ role: "user", content: currentPrompt }],
+      });
+      const text = String(response.choices[0]?.message?.content ?? "").trim();
+      const validated = ensureOwnerLoveSignalV4(text, params.config);
+      if (validated) {
+        return validated;
+      }
     }
   } catch {
     // Fall through to deterministic fallback.
   }
 
-  return fallbackLoveNote(
+  return fallbackLoveNoteV4(
     params.config,
     params.dateKey,
     daySegment(params.scheduledMinute),
-    params.dailySignals,
+    combinedSignals,
   );
 }
 
@@ -593,6 +1034,46 @@ export class WechatLoveNoteService {
     };
   }
 
+  private buildCatchupMessageV2(rows: StoredLoveNoteRow[]): DigestMessage | undefined {
+    if (rows.length === 0) {
+      return undefined;
+    }
+    const lines = rows
+      .slice(0, 3)
+      .map((row) => `- ${humanizeDateKey(row.note_date)}：${ellipsize(String(row.content ?? ""), 56)}`)
+      .filter(Boolean);
+    if (lines.length === 0) {
+      return undefined;
+    }
+    const remaining = rows.length - lines.length;
+    const tail = remaining > 0 ? `\n\n另外还有 ${remaining} 张小纸条，我会在通道稳定后再慢慢补上。` : "";
+    return {
+      kind: "overview",
+      title: "小熊的小纸条合集 🐻",
+      body: `前几天有几张小纸条晚到了，我先把它们轻轻折成一封小合集送给你：\n${lines.join("\n")}${tail}`,
+    };
+  }
+
+  private buildCatchupMessageV3(rows: StoredLoveNoteRow[]): DigestMessage | undefined {
+    if (rows.length === 0) {
+      return undefined;
+    }
+    const lines = rows
+      .slice(0, 3)
+      .map((row) => `- ${humanizeDateKey(row.note_date)}：${ellipsize(String(row.content ?? ""), 56)}`)
+      .filter(Boolean);
+    if (lines.length === 0) {
+      return undefined;
+    }
+    const remaining = rows.length - lines.length;
+    const tail = remaining > 0 ? `\n\n另外还有 ${remaining} 张小纸条，我会在通道稳定后再慢慢补上。` : "";
+    return {
+      kind: "overview",
+      title: "小熊的小纸条合集 🐻",
+      body: `前几天有几张小纸条晚到了，我先把它们轻轻折成一封小合集送给你：\n${lines.join("\n")}${tail}`,
+    };
+  }
+
   private markRowsSent(ids: string[], recipient: string): void {
     if (ids.length === 0) {
       return;
@@ -635,7 +1116,7 @@ export class WechatLoveNoteService {
       return { date: dateKey, targetId: this.config.targetId, status: "not_due", scheduledFor, sentCount: 0 };
     }
 
-    const workspace = loadWorkspaceContext(dateKey);
+    const workspace = loadWorkspaceContext(dateKey, target);
     const existingDeferred = this.existingDeferredNote(dateKey);
     const content =
       existingDeferred?.content?.trim() ||
@@ -676,7 +1157,7 @@ export class WechatLoveNoteService {
     }
 
     if (params.dryRun) {
-      const catchupMessage = this.buildCatchupMessage(pendingCatchup);
+      const catchupMessage = this.buildCatchupMessageV3(pendingCatchup);
       return {
         date: dateKey,
         targetId: this.config.targetId,
@@ -712,7 +1193,7 @@ export class WechatLoveNoteService {
     }
 
     const catchupRows = pendingCatchup.filter((row) => row.id !== deliveryId);
-    const catchupMessage = this.buildCatchupMessage(catchupRows);
+    const catchupMessage = this.buildCatchupMessageV3(catchupRows);
     const messages: DigestMessage[] = [];
     if (catchupMessage) {
       messages.push(catchupMessage);
