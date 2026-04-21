@@ -1109,8 +1109,11 @@ export class WechatLoveNoteService {
     const target = this.getTarget();
     const lastActiveAt = resolveRecipientLastActiveAt(target);
     const maxStalenessMs = this.config.maxRecipientStalenessHours * 60 * 60 * 1000;
+    const hasExplicitRecipient =
+      target.channel === "openclaw-weixin" && !!target.accountId?.trim() && !!target.to?.trim();
     const laneIsFresh =
-      !!lastActiveAt && now.getTime() - new Date(lastActiveAt).getTime() <= maxStalenessMs;
+      hasExplicitRecipient ||
+      (!!lastActiveAt && now.getTime() - new Date(lastActiveAt).getTime() <= maxStalenessMs);
     const pendingCatchup = laneIsFresh ? this.pendingCatchupNotes(8) : [];
     if (!params.force && toDateKey(now) === dateKey && localMinutesNow(now) < scheduledMinute && pendingCatchup.length === 0) {
       return { date: dateKey, targetId: this.config.targetId, status: "not_due", scheduledFor, sentCount: 0 };
